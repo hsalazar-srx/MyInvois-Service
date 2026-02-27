@@ -70,9 +70,18 @@ Per [WORKSPACE_RULES.md](../../.github/WORKSPACE_RULES.md):
 
 ---
 
-## ⚡ Commit Frequently
+## ⚡ Git Workflow
 
-**Commit after each feature/fix** (not end of day) • Small commits = easier rollback + clearer history • Don't batch unrelated changes
+### Branch Protection
+- ❌ **Never push directly to `master`** — all changes go through a feature branch + PR
+- Branch naming: `feature/description`, `fix/description`, `docs/description`, `chore/description`
+- PR required before merging to `master`; keep PRs small and focused
+
+### Commit Discipline
+- **Commit after each feature/fix** (not end of day) • Small commits = easier rollback + clearer history • Don't batch unrelated changes
+- Use Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`
+
+See [WORKSPACE_RULES.md](../../.github/WORKSPACE_RULES.md) — Git Workflow Standards for full rules.
 
 ---
 
@@ -146,7 +155,7 @@ public class MovexInvoiceReader : IMovexInvoiceReader { }
 
 **Start:** Read sprint-backlog → /plan for complex tasks
 **During:** Check skills → Write tests → /compact at 50%
-**End:** Tests pass → No credentials/PII → Commit
+**End:** Tests pass → No credentials/PII → Commit → Push to feature branch (never master directly)
 
 ---
 
@@ -156,6 +165,6 @@ Search `ai/memory/` → Check `decision-log.md` → Review `06-known-risks-and-p
 
 ---
 
-**Version:** 2.0 (Refactored)
-**Last Updated:** 2026-02-18
+**Version:** 2.1
+**Last Updated:** 2026-02-27
 **Next Review:** 2026-03-01
