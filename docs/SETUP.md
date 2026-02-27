@@ -5,15 +5,39 @@
 
 ---
 
-## Step 1: Clone Repository & Restore
+## Step 1: Clone Repository, Restore & Enable Hooks
 
 ```bash
-git clone https://github.com/SRX/MyInvois-Service.git
+git clone https://github.com/hsalazar-srx/MyInvois-Service.git
 cd MyInvois-Service
 dotnet restore
 ```
 
 **Expected:** No errors, all packages restored.
+
+### Activate Git Hooks (one-time per developer)
+
+The repo ships with a pre-commit hook that enforces the **Skills-First Architecture** rule
+(blocks `src/` commits unless `ai/memory/00-skills-audit.md` exists).
+
+```powershell
+# Option A — automated setup script (recommended)
+.\setup-hooks.ps1
+
+# Option B — manual one-liner
+git config core.hooksPath .githooks
+```
+
+**Verify** the hook is active:
+
+```bash
+git config --get core.hooksPath
+# Expected: .githooks
+```
+
+> **Note:** The hook requires `powershell.exe` (Windows PowerShell 5) or `pwsh`
+> (PowerShell Core 7+). Both are supported. See [.githooks/README.md](../.githooks/README.md)
+> for details.
 
 ---
 
@@ -105,9 +129,9 @@ EXIT
 ### Create Schema & Tables
 
 ```powershell
-# Run schema script (from MyInvois-Service folder)
-sqlcmd -S YOUR_SQL_SERVER -i .\database\create-audit-table.sql -d SRX_AuditLog
-sqlcmd -S YOUR_SQL_SERVER -i .\database\create-audit-views.sql -d SRX_AuditLog
+# Run schema script (from MyInvois-Service root folder)
+sqlcmd -S YOUR_SQL_SERVER -i .\src\Database\create-audit-table.sql -d SRX_AuditLog
+sqlcmd -S YOUR_SQL_SERVER -i .\src\Database\create-audit-views.sql -d SRX_AuditLog
 ```
 
 **Expected:** "Audit Log schema setup completed."
@@ -277,14 +301,55 @@ curl http://localhost:5001/health
 ## Configuration Files
 
 ### appsettings.json (Production/Default)
-- Defines all configuration keys
-- References User Secrets for sensitive values
+- Defines all configuration keys with safe defaults
+- Sensitive values reference `{{FROM_USER_SECRETS}}` — set via `dotnet user-secrets`
 - Batch sizes, API timeouts, validation rules
 
 ### appsettings.Development.json (Local Overrides)
 - Overrides for local development
-- Uses local SQL Server instance
-- Lower log levels for debugging
+- Uses local SQL Server instance (`(local)`)
+- Lower log levels, sandbox API endpoint
+
+### Key Configuration Options
+
+#### Party Data Source (`MovexDb:PartyDataSource`)
+
+Controls how supplier/customer TIN, BRN, and address are resolved:
+
+| Value | Behaviour | When to use |
+|-------|-----------|-------------|
+| `Placeholder` | Returns stub data; logs a warning on every call | Default for development — submissions will fail validation |
+| `MovexMaster` | Queries CIDMAS (suppliers) and OCUSMA (customers) in DB2 | Switch to this once TIN/BRN column names are confirmed by Finance |
+
+Switch via appsettings or user-secrets:
+```powershell
+dotnet user-secrets set "MovexDb:PartyDataSource" "MovexMaster"
+```
+
+#### TIN/BRN Column Mapping (MovexMaster only)
+
+When `PartyDataSource` is `MovexMaster`, the columns used for TIN and BRN must be configured.
+Leave empty until Finance confirms the column names — the provider returns `null` TIN/BRN when empty
+(which will trigger MyInvois validation errors).
+
+```powershell
+dotnet user-secrets set "MovexDb:SupplierTinColumn" "IDCFC1"
+dotnet user-secrets set "MovexDb:SupplierBrnColumn" "IDCORG"
+dotnet user-secrets set "MovexDb:CustomerTinColumn" "OKCFC1"
+dotnet user-secrets set "MovexDb:CustomerBrnColumn" "OKCORG"
+```
+
+#### AR Query Filters
+
+AR invoices are filtered by division, transaction code, and customer status. Defaults match
+production values — override only if required:
+
+| Key | Default | Column |
+|-----|---------|--------|
+| `MovexDb:ArDivision` | `L` | `FSLEDG.ESDIVI` |
+| `MovexDb:ArTransCode` | `10` | `FSLEDG.ESTRCD` |
+| `MovexDb:ArCustomerStatus` | `20` | `OCUSMA.OKSTAT` (active customers) |
+| `MovexDb:ArMinYear` | `0` (last year) | `FSLEDG.ESYEA4` — set explicit year if needed |
 
 ---
 
@@ -308,6 +373,10 @@ dotnet user-secrets list
 | "Cannot connect to SQL Server" | Check server name, instance, and integrated auth enabled |
 | "API key rejected" | Verify key hasn't expired, contact IT Ops |
 | "Certificate validation failed" | Run `dotnet dev-certs https --trust` for local HTTPS |
+| Pre-commit hook not running | Run `.\setup-hooks.ps1` or `git config core.hooksPath .githooks` |
+| Pre-commit hook "pwsh not found" | The hook falls back to `powershell.exe` automatically; no action needed |
+| "PlaceholderPartyDataProvider" warnings in logs | Expected when `PartyDataSource=Placeholder`; switch to `MovexMaster` when ready |
+| AR query returns no rows | Check `ArDivision`, `ArTransCode`, `ArCustomerStatus` in appsettings match your MOVEX data |
 
 ---
 

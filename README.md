@@ -165,13 +165,26 @@ MyInvois-Service/
 
 ### Local Setup (5 minutes)
 
-#### 1. Clone & Restore
+#### 1. Clone, Restore & Enable Hooks
 
 ```bash
-git clone https://github.com/SRX/MyInvois-Service.git
+git clone https://github.com/hsalazar-srx/MyInvois-Service.git
 cd MyInvois-Service
 dotnet restore
 ```
+
+Then activate the pre-commit hook (one-time, per developer):
+
+```powershell
+# Option A — automated (recommended)
+.\setup-hooks.ps1
+
+# Option B — manual
+git config core.hooksPath .githooks
+```
+
+> The pre-commit hook enforces **Skills-First Architecture** — it blocks `src/` commits
+> when `ai/memory/00-skills-audit.md` is absent. See [.githooks/README.md](.githooks/README.md).
 
 #### 2. Configure User Secrets
 
@@ -191,8 +204,8 @@ dotnet user-secrets set "ConnectionStrings:AuditLog" "Server=YOUR_SERVER;Databas
 
 ```powershell
 # Run SQL schema
-sqlcmd -S YOUR_SERVER -i .\database\create-audit-table.sql -d SRX_AuditLog
-sqlcmd -S YOUR_SERVER -i .\database\create-audit-views.sql -d SRX_AuditLog
+sqlcmd -S YOUR_SERVER -i .\src\Database\create-audit-table.sql -d SRX_AuditLog
+sqlcmd -S YOUR_SERVER -i .\src\Database\create-audit-views.sql -d SRX_AuditLog
 ```
 
 #### 4. Run Locally
@@ -207,24 +220,40 @@ dotnet run --launch-profile Development
 
 ### appsettings.json Structure
 
+All sensitive values are stored in **User Secrets** (never committed). The keys below map
+directly to the `appsettings.json` template already in the repo.
+
 ```json
 {
   "MovexDb": {
-    "ConnectionString": "Server=YOUR_AS400;Database=YOUR_DB;",
-    "SchemaData": "mvxcdta",
-    "SchemaProgram": "mvxc300",
-    "CommandTimeoutSeconds": 30,
-    "DataSourceStrategy": "DirectQuery"
+    "ConnectionString": "{{FROM_USER_SECRETS}}",
+    "DataSourceStrategy": "DirectQuery",
+    "SchemaCmp100": "mvxcdta",
+    "SchemaCmp300": "mvxc300",
+    "ActiveCompanyCodes": ["100", "300"],
+    "CommandTimeoutSeconds": 60,
+    "MaxPoolSize": 10,
+    "PartyDataSource": "Placeholder",
+    "ArDivision": "L",
+    "ArTransCode": "10",
+    "ArCustomerStatus": "20",
+    "ArMinYear": 0,
+    "SupplierTinColumn": "",
+    "SupplierBrnColumn": "",
+    "CustomerTinColumn": "",
+    "CustomerBrnColumn": ""
   },
   "MyInvoisApi": {
     "BaseUrl": "https://sandbox.myinvois.hasil.gov.my",
     "Environment": "sandbox"
   },
-  "CertificateSettings": {
-    "StoragePath": "C:\\Certs\\MyInvois\\myinvois-cert.pfx",
-    "PasswordReference": "Credential:MyInvoisCert",
-    "Thumbprint": "[VALUE FROM FINANCE DOCUMENTATION]",
-    "ValidityCheckIntervalDays": 14
+  "Companies": {
+    "100": { "TIN": "...", "Name": "...", "BRN": "..." },
+    "300": { "TIN": "...", "Name": "...", "BRN": "..." }
+  },
+  "ForeignPartyDefaults": {
+    "SupplierTIN": "EI00000000030",
+    "BuyerTIN": "EI00000000020"
   },
   "BatchProcessing": {
     "SalesBatchSize": 100,
@@ -239,13 +268,17 @@ dotnet run --launch-profile Development
 }
 ```
 
-**Certificate Configuration Notes:**
-- ⚠️ **DO NOT** put certificate password directly in `appsettings.json`
-- Password must be retrieved from **Windows Credential Manager** or **DPAPI** (see SETUP.md)
-- `Thumbprint` is documented for audit/verification purposes only
-- `ValidityCheckIntervalDays=14` triggers monitoring alerts 14 days before expiry
+**Key configuration notes:**
 
-All sensitive values stored in **User Secrets** (not committed to repo).
+| Key | Description |
+|-----|-------------|
+| `MovexDb:DataSourceStrategy` | `DirectQuery` (default) or `StoredProcedure` |
+| `MovexDb:PartyDataSource` | `Placeholder` (dev) or `MovexMaster` (queries CIDMAS/OCUSMA) |
+| `MovexDb:ArDivision` / `ArTransCode` / `ArCustomerStatus` | AR query filters — defaults match production values |
+| `MovexDb:ArMinYear` | Set to `0` to use dynamic (last-year) default, or set an explicit year |
+| `MovexDb:SupplierTinColumn` / `CustomerTinColumn` | CIDMAS/OCUSMA column names for TIN — leave empty until confirmed by Finance |
+| `Companies:100` / `Companies:300` | Supplier TIN/BRN/Name for each company — populate before production |
+| `ForeignPartyDefaults` | Generic EI numbers for non-Malaysian parties (MyInvois standard) |
 
 ---
 
@@ -474,7 +507,7 @@ Internal project for SRX Global. See [LICENSE](LICENSE) for details.
 
 ---
 
-**Last Updated:** February 16, 2026
+**Last Updated:** February 27, 2026
 **Maintained By:** Development Team  
 **Status:** ✅ Active Development  
 
