@@ -1,0 +1,40 @@
+{
+  "invoiceNumber": "INV-2026-00001",
+  "invoiceDate": "2026-02-01",
+  "invoiceType": "Sales",
+  "currencyCode": "MYR",
+  "exchangeRate": 1.0,
+  "totalExclTax": 1000.00,
+  "totalTax": 60.00,
+  "totalInclTax": 1060.00,
+  "supplier": {
+    "tin": "123456789012",
+    "name": "PT Technology Solutions Sdn Bhd",
+    "brn": "001122334455",
+    "idScheme": "BRN",
+    "address": "123 Jalan Teknologi, Kuala Lumpur 50400, Malaysia"
+  },
+  "buyer": {
+    "tin": "987654321098",
+    "name": "ABC Corporation (M) Sdn Bhd",
+    "brn": "556677889900",
+    "idScheme": "BRN",
+    "address": "456 Jalan Perdagangan, Selangor 40400, Malaysia"
+  },
+  "lines": [
+    {
+      "lineNumber": 1,
+      "itemNumber": "PROD-001",
+      "description": "Software License - Annual Subscription",
+      "classificationCode": "620",
+      "quantity": 1.0,
+      "unitOfMeasure": "EA",
+      "unitPrice": 1000.00,
+      "lineTotal": 1000.00,
+      "taxCode": "SR",
+      "taxRate": 6.0,
+      "taxAmount": 60.00
+    }
+  ],
+  "status": "Open"
+}

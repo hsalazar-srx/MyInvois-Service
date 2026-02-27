@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{913D7FF4-792C-401E-BE6C-667648585302}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyInvois.Service", "src\MyInvois.Service\MyInvois.Service.csproj", "{01CBA56A-2C82-482F-B959-B7FD7533F14C}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{7464AACB-CB8E-455A-BEB7-82607F0705F5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyInvois.Service.Tests", "tests\MyInvois.Service.Tests\MyInvois.Service.Tests.csproj", "{1A437C3F-4E54-4FB2-BD34-7929ED731DF3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{01CBA56A-2C82-482F-B959-B7FD7533F14C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{01CBA56A-2C82-482F-B959-B7FD7533F14C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{01CBA56A-2C82-482F-B959-B7FD7533F14C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{01CBA56A-2C82-482F-B959-B7FD7533F14C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A437C3F-4E54-4FB2-BD34-7929ED731DF3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A437C3F-4E54-4FB2-BD34-7929ED731DF3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A437C3F-4E54-4FB2-BD34-7929ED731DF3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A437C3F-4E54-4FB2-BD34-7929ED731DF3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{01CBA56A-2C82-482F-B959-B7FD7533F14C} = {913D7FF4-792C-401E-BE6C-667648585302}
+		{1A437C3F-4E54-4FB2-BD34-7929ED731DF3} = {7464AACB-CB8E-455A-BEB7-82607F0705F5}
+	EndGlobalSection
+EndGlobal

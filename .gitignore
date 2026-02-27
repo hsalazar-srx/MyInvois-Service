@@ -1,0 +1,112 @@
+# ==========================================
+# .NET / C# Build Artifacts
+# ==========================================
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# ==========================================
+# Visual Studio / Rider / VS Code
+# ==========================================
+.vs/
+.idea/
+*.vbw
+*.vbp
+*.csproj.user
+*.vbproj.user
+*.fsproj.user
+*.dbproj.user
+*.sln.ide
+
+# ==========================================
+# Test Results & Coverage
+# ==========================================
+TestResults/
+[Tt]est[Rr]esult*/
+coverage/
+*.trx
+*.coverage
+*.coveragexml
+*.opencover.xml
+BenchmarkDotNet.Artifacts/
+
+# ==========================================
+# .NET User Secrets (NEVER commit)
+# Stored in: %APPDATA%\Microsoft\UserSecrets\
+# ==========================================
+secrets.json
+*.secrets.json
+**/secrets.json
+
+# ==========================================
+# Environment & Credentials (NEVER commit)
+# ==========================================
+.env
+.env.*
+*.pfx
+*.p12
+*.key
+*.pem
+*.cer
+
+# ==========================================
+# NuGet
+# ==========================================
+*.nupkg
+*.snupkg
+*.nuget.props
+*.nuget.targets
+packages/
+!**/packages/repositories.config
+.nuget/
+
+# ==========================================
+# Rider / JetBrains
+# ==========================================
+.idea/
+*.DotSettings.user
+_ReSharper*/
+
+# ==========================================
+# Windows
+# ==========================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ==========================================
+# macOS
+# ==========================================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ==========================================
+# Context / scratch artifacts (not source-controlled)
+# ==========================================
+context/
+
+# ==========================================
+# Log files
+# ==========================================
+*.log
+logs/
+
+# ==========================================
+# Azure / Publish profiles (may contain tokens)
+# ==========================================
+*.pubxml
+*.pubxml.user
+PublishProfiles/
+
+# ==========================================
+# Entity Framework migrations (keep migrations committed)
+# ==========================================
+# (nothing excluded here — migrations are source-controlled)
