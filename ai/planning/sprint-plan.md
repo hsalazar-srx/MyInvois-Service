@@ -491,6 +491,261 @@ Action items:
 ---
 
 **Owner:** Project Manager
-**Status:** Active (Sprint 1-2 Complete, Sprint 3 In Progress — 3 Go-Live Blockers Identified)
-**Last Updated:** February 19, 2026
+**Status:** Phase 1 Complete (Sprints 1-4) | Phase 2 In Progress (Sprint 5 — Audit Storage Migration)
+**Last Updated:** March 4, 2026
+
+---
+
+---
+
+# Phase 2: Audit Storage Migration (SQLite)
+
+**Initiative:** MVAI-P2 — SQLite Audit Storage Migration
+**Start:** March 4, 2026
+**Sprint Model:** 1-week sprints (continuing Sprint numbering from Phase 1)
+**Linked Plan:** `C:\Users\hsalazar\.claude\plans\harmonic-napping-hollerith.md`
+**MAS Agents:** `architect-system-design`, `developer-dotnet`, `expert-myinvois-compliance`, `validator-quality`
+**Scope:** MyInvois-Service (Story 2) + SM-Portal (Story 3) — running in parallel from Sprint 6
+
+---
+
+## Sprint 5: ADR & Architecture Review (Mar 4-7) ⏳ IN PROGRESS
+
+### Sprint Goal
+**Document the SQLite audit storage decision, update all project AI context files, and obtain Architecture Review sign-off — no code changes until sign-off is complete.**
+
+### Sprint Plan
+
+**Wednesday Mar 4 — ADR Authoring**
+
+Tasks:
+1. [ ] **Task 5.1:** Create `ai/evidence/decision-001-sqlite-audit-storage.md`
+   - Context: users requested removal of SQL Server dependency for audit logs
+   - Decision: SQLite via EF Core (Microsoft.Data.Sqlite + EF Core 8)
+   - Options considered: SQL Server LocalDB, SQL Server Express, LiteDB, SQLite
+   - Consequences: no TDE (BitLocker mitigation), WAL mode, NTFS ACL on .db file
+   - Compliance: ISO 27001 7-year retention maintained; OS-level encryption documented
+   - Links to: Story 2 tasks in sprint-backlog.md (6.1–6.8)
+2. [ ] **Task 5.2:** Update `ai/memory/08-governance-and-decisions.md`
+   - Add: ADR reference (decision-001), rationale summary, Architecture Review status
+
+**Thursday Mar 5 — Context File Updates**
+
+Tasks:
+1. [ ] **Task 5.3:** Update `ai/memory/09-implementation-decisions.md`
+   - Add: ADR-014 — SQLite provider choice (Microsoft.Data.Sqlite), EF Core Code-First
+   - Add: WAL mode PRAGMA on startup, file path convention (`./data/audit.db`)
+   - Add: GUID stored as TEXT, DATETIME2 stored as ISO 8601 TEXT
+   - Replace: ADR-002 (SQL Server Audit) → superseded by ADR-014
+2. [ ] **Task 5.4:** Update `ai/patterns/audit-logging.md`
+   - Replace SQL Server / ADO.NET section with EF Core + SQLite pattern
+   - Document: AuditDbContext setup, WAL mode, in-memory SQLite for tests
+
+**Friday Mar 6–7 — Architecture Review**
+
+Tasks:
+1. [ ] **Task 5.5:** Submit decision-001 for Architecture Review (`architect-system-design`)
+   - Verify: clean architecture maintained (IAuditLogger interface preserved)
+   - Verify: security implications documented (BitLocker, NTFS ACL)
+   - Verify: compliance notes (ISO 27001, 7-year retention plan)
+   - Record sign-off in `ai/evidence/decision-log.md`
+2. [ ] **Sprint 6 planning:** Brief team on Story 2 scope (6.1–6.8)
+
+### Success Criteria
+
+- [ ] `ai/evidence/decision-001-sqlite-audit-storage.md` created and peer-reviewed
+- [ ] `ai/memory/08-governance-and-decisions.md` updated with ADR reference
+- [ ] `ai/memory/09-implementation-decisions.md` updated (ADR-014 added)
+- [ ] `ai/patterns/audit-logging.md` updated with SQLite/EF Core pattern
+- [ ] Architecture Review sign-off recorded in `ai/evidence/decision-log.md`
+- [ ] No code changes made this sprint
+
+### Sprint Metrics
+
+| Metric | Target | Actual |
+|--------|--------|--------|
+| ADR created | 1 | [ ] |
+| Memory files updated | 3 | [ ] |
+| Pattern files updated | 1 | [ ] |
+| Architecture Review sign-off | Yes | [ ] |
+| Code changes | 0 | [ ] |
+
+---
+
+## Sprint 6: SQLite Implementation — MyInvois-Service (Mar 10-14) ⏳ PLANNED
+
+### Sprint Goal
+**Replace SQL Server audit logger with SQLite via EF Core. The `IAuditLogger` interface must remain unchanged. All 225+ existing tests must continue to pass.**
+
+> Note: SM-Portal Story 3 runs in parallel this sprint (see SM-Portal sprint-plan.md Sprint 4).
+
+### Sprint Plan
+
+**Monday Mar 10 — Package Swap + Data Layer**
+
+Tasks:
+1. [ ] **Task 6.1:** NuGet package changes in `MyInvois.Service.csproj`
+   - Remove: `System.Data.SqlClient 4.9.0`
+   - Add: `Microsoft.Data.Sqlite 8.0.*`, `Microsoft.EntityFrameworkCore.Sqlite 8.0.*`, `Microsoft.EntityFrameworkCore.Design 8.0.*`
+   - Run `dotnet restore` — confirm build green
+2. [ ] **Task 6.2:** Create `src/MyInvois.Service/Data/AuditLogEntity.cs`
+   - Map all existing schema columns (preserves 45-column schema from `create-audit-table.sql`)
+   - Guid properties stored as `string` (EF Core value converter)
+3. [ ] **Task 6.3:** Create `src/MyInvois.Service/Data/AuditDbContext.cs`
+   - `DbSet<AuditLogEntity> AuditLogs`
+   - `OnModelCreating`: CHECK constraints (Status, Severity), partial indexes via `HasFilter()`
+   - WAL mode enabled via `Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL")`
+4. [ ] **Task 6.4:** Create `src/MyInvois.Service/Data/AuditDbContextFactory.cs`
+   - `IDesignTimeDbContextFactory<AuditDbContext>` for EF migrations CLI tooling
+
+**Tuesday Mar 11 — EF Core Migration + AuditLogger Rewrite**
+
+Tasks:
+1. [ ] **Task 6.3b:** Generate EF Core initial migration
+   - `dotnet ef migrations add InitialCreate --project src/MyInvois.Service`
+   - Review generated migration for correctness (types, indexes, constraints)
+2. [ ] **Task 6.4:** Rewrite `src/MyInvois.Service/Services/AuditLogger.cs`
+   - Replace `IDbConnection` + raw ADO.NET with `AuditDbContext` (or `IDbContextFactory<AuditDbContext>`)
+   - `LogSubmission` → EF Core insert (`AuditLogs.AddAsync` + `SaveChangesAsync`)
+   - `IsInvoiceAlreadySubmitted` → LINQ: `AuditLogs.AnyAsync(x => x.InvoiceNumber == invoiceNumber && x.Status == "Success")`
+   - `GetFailedSubmissions` → LINQ: `Where(x => x.Status == "Failed" && x.Category == "MyInvois").OrderByDescending(x => x.SubmittedAt).Take(maxResults)`
+   - Keep `IAuditLogger` interface **unchanged**
+
+**Wednesday Mar 12 — DI + Configuration**
+
+Tasks:
+1. [ ] **Task 6.5:** Update `src/MyInvois.Service/DataAccess/ServiceCollectionExtensions.cs`
+   - Remove `IDbConnection` registration
+   - Add `services.AddDbContext<AuditDbContext>(options => options.UseSqlite(connectionString))`
+   - Add startup call: `context.Database.EnsureCreated()` + WAL mode PRAGMA
+2. [ ] **Task 6.6:** Update configuration files
+   - `appsettings.json`: keep `ConnectionStrings:AuditLog` key but set value to `{{FROM_USER_SECRETS}}`
+   - `appsettings.Development.json`: `"AuditLog": "Data Source=./data/audit.db"`
+   - `src/Database/create-audit-table-sqlite.sql`: create SQLite DDL reference script (for manual recovery)
+
+**Thursday Mar 13 — Tests**
+
+Tasks:
+1. [ ] **Task 6.7:** Update `tests/MyInvois.Service.Tests/Integration/AuditLoggerIntegrationTests.cs`
+   - Replace `Mock<IDbConnection>` with in-memory SQLite (`Data Source=:memory:`)
+   - All 3 method tests: `LogSubmission`, `IsInvoiceAlreadySubmitted`, `GetFailedSubmissions`
+   - Add: verify WAL mode enabled after `EnsureCreated()`
+2. [ ] Run full test suite: `dotnet test` — all 225+ tests must pass
+
+**Friday Mar 14 — Code Review & Verification**
+
+Tasks:
+1. [ ] **Task 6.8:** Code review by Tech Lead
+   - [ ] `IAuditLogger` interface unchanged
+   - [ ] No hardcoded paths or connection strings
+   - [ ] `System.Data.SqlClient` fully removed
+   - [ ] EF Core patterns follow `ai/patterns/audit-logging.md`
+   - [ ] WAL mode confirmed via `PRAGMA journal_mode` check
+2. [ ] Run locally: verify `./data/audit.db` created on first run
+3. [ ] Merge to main
+
+### Success Criteria
+
+- [ ] `dotnet build` — 0 errors, 0 warnings
+- [ ] `dotnet test` — all 225+ tests passing (100%)
+- [ ] `System.Data.SqlClient` removed from `.csproj`
+- [ ] `audit.db` created in `./data/` on first run
+- [ ] `PRAGMA journal_mode` returns `wal`
+- [ ] `IAuditLogger` interface unchanged (no consumer impact)
+- [ ] Code review approved by Tech Lead
+
+### Sprint Metrics
+
+| Metric | Target | Actual |
+|--------|--------|--------|
+| NuGet packages removed | 1 (SqlClient) | [ ] |
+| New EF Core packages | 3 | [ ] |
+| New files created | 4 (Entity, Context, Factory, Migration) | [ ] |
+| Files modified | 4 (AuditLogger, DI, appsettings ×2) | [ ] |
+| Tests passing | 225+ (100%) | [ ] |
+| Build warnings | 0 | [ ] |
+| Critical defects | 0 | [ ] |
+
+---
+
+## Sprint 7: Compliance, Backup & Handoff (Mar 17-21) ⏳ PLANNED
+
+### Sprint Goal
+**Complete compliance documentation, define backup runbook, obtain security review sign-off, and run smoke test in test environment.**
+
+### Sprint Plan
+
+**Monday Mar 17 — Compliance Docs**
+
+Tasks:
+1. [ ] **Task 7.1:** Update `docs/DEPLOYMENT.md`
+   - Add: BitLocker requirement (IIS server volume must be BitLocker-encrypted)
+   - Add: NTFS ACL setup instructions (`icacls data\ /grant "IIS AppPool\MyInvoisService:(OI)(CI)F" /T`)
+   - Add: verify `.db` file not accessible by IIS anonymous user
+2. [ ] **Task 7.2:** Write backup runbook section in `docs/DEPLOYMENT.md`
+   - Robocopy command: `robocopy .\data\ \\backup-server\myinvois-audit\ audit.db /COPYALL /LOG`
+   - Schedule: daily task via Windows Task Scheduler
+   - Restore procedure: copy `.db` file back, verify WAL file integrity
+   - Test restore: copy to temp location, open with EF Core, query 10 rows
+
+**Tuesday-Wednesday Mar 18-19 — Security Review**
+
+Tasks:
+1. [ ] **Task 7.3:** Security review coordination (`validator-quality`)
+   - Verify: NTFS ACL on `./data/audit.db` (App Pool only)
+   - Verify: WAL journal file (`audit.db-wal`) also restricted
+   - Verify: no secrets in connection string (user-secrets / env vars)
+   - Verify: SQLite injection not possible (EF Core parameterizes all queries)
+   - Record: security review pass/fail in `ai/evidence/decision-log.md`
+
+**Thursday Mar 20 — WORKSPACE_RULES Update**
+
+Tasks:
+1. [ ] **Task 7.4:** Update `c:\Projects\.github\WORKSPACE_RULES.md`
+   - Add: SQLite approved for self-hosted IIS deployments (alongside SQL Server)
+   - Condition: BitLocker required, NTFS ACL required, WAL mode required, backup runbook required
+   - Condition: volume <500 events/day (above this threshold, SQL Server preferred)
+
+**Friday Mar 21 — Smoke Test & Sprint Close**
+
+Tasks:
+1. [ ] **Task 7.5:** Smoke test in test environment
+   - Deploy to test IIS instance
+   - Trigger 5 invoice submissions
+   - Open `audit.db` via DB Browser for SQLite
+   - Verify 5 rows inserted with correct fields
+   - Verify `PRAGMA journal_mode = wal`
+2. [ ] Sprint 7 review & retrospective
+3. [ ] Phase 2 close-out: confirm all 4 Stories complete (with SM-Portal Sprint 5)
+
+### Success Criteria
+
+- [ ] `docs/DEPLOYMENT.md` updated with BitLocker + NTFS ACL + backup runbook
+- [ ] Security review sign-off recorded
+- [ ] `WORKSPACE_RULES.md` updated (SQLite approved for IIS)
+- [ ] Smoke test: 5 rows confirmed in `audit.db`
+- [ ] Phase 2 Stories 1 + 2 + 4 complete for MyInvois-Service
+
+### Sprint Metrics
+
+| Metric | Target | Actual |
+|--------|--------|--------|
+| Compliance docs updated | 1 (DEPLOYMENT.md) | [ ] |
+| Security review | Pass | [ ] |
+| WORKSPACE_RULES updated | Yes | [ ] |
+| Smoke test invoices | 5 | [ ] |
+| Open defects | 0 | [ ] |
+
+---
+
+## Phase 2 Key Dates
+
+| Date | Event | Owner |
+|------|-------|-------|
+| Mar 4 (Wed) | Sprint 5 Kickoff — ADR authoring | architect-system-design |
+| Mar 7 (Fri) | Sprint 5 Review — Architecture Review sign-off | architect-system-design |
+| Mar 10 (Mon) | Sprint 6 Kickoff — SQLite implementation starts | developer-dotnet |
+| Mar 14 (Fri) | Sprint 6 Review — Code review + merge | Tech Lead |
+| Mar 17 (Mon) | Sprint 7 Kickoff — Compliance + security review | Cross-team |
+| Mar 21 (Fri) | Sprint 7 Review — Smoke test + Phase 2 close | Team |
 

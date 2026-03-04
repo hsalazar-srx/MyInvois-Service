@@ -454,7 +454,172 @@ Target line:    ↘→↘→↘→↘→↘
 
 ---
 
-**Owner:** Developer, QA, Ops  
-**Status:** Sprint 2 Active (Feb 10-14)  
-**Last Updated:** February 5, 2026
+**Owner:** Developer, QA, Ops
+**Status:** Phase 1 Complete | Phase 2 Sprint 5 Active (Mar 4-7)
+**Last Updated:** March 4, 2026
+
+---
+
+---
+
+# Phase 2: Audit Storage Migration (SQLite)
+
+**Initiative:** MVAI-P2
+**Epic:** Audit Storage Migration — SQLite
+**Linked Plan:** `C:\Users\hsalazar\.claude\plans\harmonic-napping-hollerith.md` (Story 2)
+**Cross-project:** SM-Portal runs parallel Sprints 3–5 (see `c:\Projects\SM-Portal\ai\tasks\sprint-backlog.md`)
+
+---
+
+## Sprint 5: ADR & Architecture Review (Mar 4-7, 2026)
+
+### Work Items Summary
+
+| ID | Task | Story | Status | Assignee | Effort | Priority |
+|----|------|-------|--------|----------|--------|----------|
+| 5.1 | Create `ai/evidence/decision-001-sqlite-audit-storage.md` | Story 1 | ⏳ Ready | architect-system-design | 3h | P0 |
+| 5.2 | Update `ai/memory/08-governance-and-decisions.md` | Story 1 | ⏳ Ready | architect-system-design | 1h | P0 |
+| 5.3 | Update `ai/memory/09-implementation-decisions.md` (ADR-014) | Story 1 | ⏳ Ready | developer-dotnet | 1h | P0 |
+| 5.4 | Update `ai/patterns/audit-logging.md` (SQLite/EF Core pattern) | Story 1 | ⏳ Ready | developer-dotnet | 1h | P0 |
+| 5.5 | Architecture Review sign-off → `ai/evidence/decision-log.md` | Story 1 | ⏳ Ready | architect-system-design | 2h | P0 |
+| **Total** | | | | | **8h** | |
+
+### Task Detail: 5.1 — Create ADR decision-001-sqlite-audit-storage.md
+
+**File:** `c:\Projects\MyInvois-Service\ai\evidence\decision-001-sqlite-audit-storage.md`
+
+**Content required:**
+- **Status:** Proposed → Accepted (after Architecture Review)
+- **Context:** Users requested removal of SQL Server dependency for audit logs; service runs on IIS, <500 invoices/day
+- **Decision:** Replace `System.Data.SqlClient` + ADO.NET with `Microsoft.Data.Sqlite` + EF Core 8 (Code-First)
+- **Options considered:** SQL Server LocalDB (rejected: still SQL Server runtime), SQL Server Express (rejected: same), LiteDB (rejected: no EF Core provider), JSONL (rejected: not queryable)
+- **Consequences:** No TDE (mitigated by BitLocker), WAL mode required, NTFS ACL on `./data/audit.db`
+- **Compliance:** ISO 27001 7-year retention maintained; OS-level encryption per BitLocker
+- **Skills:** `architecture/audit-logging-framework v1.0+`, `architecture/configuration-management v1.0+`
+
+**Acceptance Criteria:**
+- [ ] ADR follows project decision record format (see `ai/evidence/decision-002-separate-portal-api.md` in SM-Portal for reference)
+- [ ] Options considered section documents all 4 alternatives
+- [ ] Compliance section addresses 7-year retention plan for SQLite file growth
+- [ ] Architecture Review sign-off noted in `ai/evidence/decision-log.md`
+
+---
+
+### Task Detail: 5.3 — Update ai/memory/09-implementation-decisions.md
+
+**Add ADR-014 entry:**
+- Title: SQLite Audit Storage via EF Core
+- Decision date: March 4, 2026
+- Supersedes: ADR-002 (SQL Server Audit)
+- Decision: Use `Microsoft.Data.Sqlite` + `Microsoft.EntityFrameworkCore.Sqlite 8.0.*`
+- Pattern: Code-First, `EnsureCreated()` on startup, WAL mode
+- File path: `Data Source=./data/audit.db` (relative to `AppContext.BaseDirectory`)
+- Type mappings: GUID → TEXT, DATETIME2 → TEXT (ISO 8601)
+- Test pattern: in-memory SQLite (`Data Source=:memory:`) replaces `Mock<IDbConnection>`
+
+---
+
+### Known Risks Sprint 5
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| Architecture Review not completed by Fri Mar 7 | Sprint 6 start delayed | Schedule review meeting Thu Mar 6 |
+| ADR format disagreement | Rework | Reference SM-Portal decision-002 format upfront |
+
+---
+
+## Sprint 6: SQLite Implementation (Mar 10-14, 2026)
+
+### Work Items Summary
+
+| ID | Task | Story | Status | Assignee | Effort | Priority |
+|----|------|-------|--------|----------|--------|----------|
+| 6.1 | NuGet: remove `System.Data.SqlClient`, add Sqlite + EF Core packages | Story 2 | ⏳ Ready | developer-dotnet | 1h | P0 |
+| 6.2 | Create `src/Data/AuditLogEntity.cs` (EF Core entity, all 45 columns) | Story 2 | ⏳ Ready | developer-dotnet | 3h | P0 |
+| 6.3 | Create `src/Data/AuditDbContext.cs` + `AuditDbContextFactory.cs` | Story 2 | ⏳ Ready | developer-dotnet | 3h | P0 |
+| 6.3b | Generate EF Core initial migration (`dotnet ef migrations add InitialCreate`) | Story 2 | ⏳ Ready | developer-dotnet | 1h | P0 |
+| 6.4 | Rewrite `src/Services/AuditLogger.cs` with EF Core (keep `IAuditLogger` unchanged) | Story 2 | ⏳ Ready | developer-dotnet | 6h | P0 |
+| 6.5 | Update `src/DataAccess/ServiceCollectionExtensions.cs` (DI + WAL mode startup) | Story 2 | ⏳ Ready | developer-dotnet | 2h | P0 |
+| 6.6 | Update `appsettings.json` + `appsettings.Development.json` (SQLite connection string) | Story 2 | ⏳ Ready | developer-dotnet | 1h | P0 |
+| 6.6b | Create `src/Database/create-audit-table-sqlite.sql` (SQLite DDL reference script) | Story 2 | ⏳ Ready | developer-dotnet | 1h | P1 |
+| 6.7 | Update `tests/Integration/AuditLoggerIntegrationTests.cs` (in-memory SQLite) | Story 2 | ⏳ Ready | developer-dotnet | 4h | P0 |
+| 6.8 | Full build + test run (`dotnet test` — all 225+ passing) + code review | Story 2 | ⏳ Ready | Tech Lead | 3h | P0 |
+| **Total** | | | | | **25h** | |
+
+### Task Detail: 6.4 — Rewrite AuditLogger.cs
+
+**File:** `c:\Projects\MyInvois-Service\src\MyInvois.Service\Services\AuditLogger.cs`
+
+**Key changes:**
+- Constructor: `IDbContextFactory<AuditDbContext>` replaces `IDbConnection`
+- `LogSubmission`: `using var ctx = _factory.CreateDbContext(); ctx.AuditLogs.Add(entity); await ctx.SaveChangesAsync()`
+- `IsInvoiceAlreadySubmitted`: `ctx.AuditLogs.AnyAsync(x => x.InvoiceNumber == invoiceNumber && x.Status == "Success")`
+- `GetFailedSubmissions`: `ctx.AuditLogs.Where(x => x.Status == "Failed" && x.Category == "MyInvois").OrderByDescending(x => x.SubmittedAt).Take(maxResults).ToListAsync()`
+- Interface `IAuditLogger` **must not change** (lines 21–37 of current file)
+
+**Definition of Done:**
+- [ ] `IAuditLogger` interface lines 21–37 unchanged
+- [ ] `IDbConnection` completely removed from constructor and usages
+- [ ] All 3 public methods async-native (no `Task.CompletedTask` workarounds)
+- [ ] `EnsureConnectionOpen()` and `AddParameter()` private helpers removed
+- [ ] XML doc comments updated to reference SQLite instead of SQL Server
+
+### Task Detail: 6.7 — Update Integration Tests
+
+**File:** `c:\Projects\MyInvois-Service\tests\MyInvois.Service.Tests\Integration\AuditLoggerIntegrationTests.cs`
+
+**Changes:**
+- Replace `Mock<IDbConnection>` setup with: `new SqliteConnection("Data Source=:memory:")`
+- Create `AuditDbContext` with in-memory SQLite and call `EnsureCreated()` in test setup
+- Test cases remain the same (LogSubmission, IsInvoiceAlreadySubmitted, GetFailedSubmissions)
+- Add assertion: `PRAGMA journal_mode` — not applicable for in-memory, note in comment
+
+### Burndown (Sprint 6)
+
+```
+Day 1 (Mon): 25h → 19h  (6.1, 6.2 tasks done)
+Day 2 (Tue): 19h → 12h  (6.3, 6.3b, 6.4 in progress)
+Day 3 (Wed): 12h →  7h  (6.4 complete, 6.5, 6.6 done)
+Day 4 (Thu):  7h →  3h  (6.7 tests done)
+Day 5 (Fri):  3h →  0h  (6.8 review + merge)
+```
+
+### Known Risks Sprint 6
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| EF Core migration generates incorrect SQLite types | Schema mismatch at runtime | Review generated migration file manually before applying |
+| Partial index syntax not supported by EF Core SQLite | Index creation fails | Use `HasFilter("\"Status\" != 'Success'")` SQLite-compatible WHERE |
+| `IDbContextFactory` vs `IDbContext` thread safety | Async test failures | Use `IDbContextFactory<AuditDbContext>` for safe per-operation scoping |
+
+---
+
+## Sprint 7: Compliance, Backup & Handoff (Mar 17-21, 2026)
+
+### Work Items Summary
+
+| ID | Task | Story | Status | Assignee | Effort | Priority |
+|----|------|-------|--------|----------|--------|----------|
+| 7.1 | Update `docs/DEPLOYMENT.md` — BitLocker requirement + NTFS ACL setup | Story 4 | ⏳ Ready | expert-myinvois-compliance | 2h | P0 |
+| 7.2 | Write backup runbook — robocopy procedure + restore steps | Story 4 | ⏳ Ready | Ops Lead | 2h | P0 |
+| 7.3 | Security review coordination with `validator-quality` | Story 4 | ⏳ Ready | validator-quality | 4h | P0 |
+| 7.4 | Update `c:\Projects\.github\WORKSPACE_RULES.md` (SQLite approved for IIS) | Story 4 | ⏳ Ready | architect-system-design | 1h | P1 |
+| 7.5 | Smoke test: deploy to test IIS, submit 5 invoices, verify `audit.db` rows | Story 4 | ⏳ Ready | developer-dotnet | 2h | P1 |
+| **Total** | | | | | **11h** | |
+
+### Task Detail: 7.3 — Security Review Checklist
+
+**Reviewer:** `validator-quality`
+**Trigger:** Auth/authz-adjacent change (audit log storage medium change), sensitive data handling
+
+| Check | Description | Pass/Fail |
+|-------|-------------|-----------|
+| NTFS ACL | `./data/audit.db` readable only by App Pool identity | [ ] |
+| WAL journal | `./data/audit.db-wal` also NTFS-restricted | [ ] |
+| Connection string | Not in `appsettings.json` (user-secrets / env var) | [ ] |
+| SQL injection | EF Core parameterizes all queries — no raw SQL with user input | [ ] |
+| Secrets in logs | Connection string not logged at startup | [ ] |
+| Backup file ACL | Backup share restricted (not world-readable) | [ ] |
+
+**Record outcome in:** `ai/evidence/decision-log.md`
 
