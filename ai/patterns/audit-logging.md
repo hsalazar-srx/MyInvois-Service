@@ -1,81 +1,209 @@
 # Audit Logging Pattern
 
-**Purpose:** Log all operations to workspace-compliant audit schema
-**Last Updated:** 2026-02-17
+**Purpose:** Log all operations to workspace-compliant audit schema via EF Core + SQLite
+**Storage:** SQLite via EF Core 8 (Phase 2, ADR-014) — Phase 1 used SQL Server
+**Last Updated:** 2026-03-04
 
 ---
 
-## 📋 Workspace Standard Schema
+## Overview
 
-Per [../../.github/WORKSPACE_RULES.md](../../.github/WORKSPACE_RULES.md):
-- Database: `SRX_AuditLog`
-- Table: `[dbo].[AuditLog]`
-- Standard fields + MyInvois-specific extensions
+The audit logger is implemented as `AuditLogger : IAuditLogger` using `IDbContextFactory<AuditDbContext>`
+for thread-safe, per-operation database access. The `IAuditLogger` interface is unchanged from Phase 1.
+
+**File path (production):** `./data/audit.db` (relative to `AppContext.BaseDirectory`)
+**File path (tests):** `Data Source=:memory:` (in-memory SQLite, no file)
 
 ---
 
-## 🎯 Complete Example
+## IAuditLogger Interface (unchanged)
+
+```csharp
+public interface IAuditLogger
+{
+    Task LogSubmissionAsync(AuditEntry entry);
+    Task<bool> IsInvoiceAlreadySubmittedAsync(string invoiceNumber);
+    Task<IEnumerable<AuditEntry>> GetFailedSubmissionsAsync(int maxResults = 100);
+}
+```
+
+---
+
+## Complete Implementation Example
 
 ```csharp
 /// <summary>
-/// Logs MyInvois submission to workspace-compliant audit table.
+/// Logs MyInvois submission to SQLite audit database via EF Core.
+/// IAuditLogger interface unchanged from Phase 1 (ADR-014).
 /// </summary>
-public async Task LogSubmissionAsync(
-    string invoiceNumber,
-    decimal totalAmount,
-    string currencyCode,
-    bool success,
-    MyInvoisResponse response,
-    Guid correlationId,
-    int durationMs)
+public class AuditLogger : IAuditLogger
 {
-    await _auditLogger.LogAsync(new AuditEntry
+    private readonly IDbContextFactory<AuditDbContext> _contextFactory;
+    private readonly ILogger<AuditLogger> _logger;
+
+    public AuditLogger(IDbContextFactory<AuditDbContext> contextFactory, ILogger<AuditLogger> logger)
     {
-        // ===== STANDARD FIELDS (Required by Workspace) =====
-        // Who
-        UserId = _currentUser.WindowsId,           // e.g., "SRXGLOBAL\\svc-myinvois"
-        UserRole = "Service_MyInvoicing",
-        IpAddress = _httpContext.Connection.RemoteIpAddress?.ToString(),
+        _contextFactory = contextFactory;
+        _logger = logger;
+    }
 
-        // What
-        Action = "MyInvois_Submit",
-        Category = "Integration",
-        Severity = success ? "Info" : "Error",
+    public async Task LogSubmissionAsync(AuditEntry entry)
+    {
+        using var ctx = _contextFactory.CreateDbContext();
+        ctx.AuditLogs.Add(new AuditLogEntity
+        {
+            // ===== STANDARD FIELDS =====
+            AuditId        = Guid.NewGuid().ToString(),
+            Timestamp      = DateTime.UtcNow.ToString("O"),      // ISO 8601 UTC
 
-        // Where
-        ResourceType = "Invoice",
-        ResourceId = invoiceNumber,                // e.g., "INV-2026-00001"
-        Endpoint = "POST /api/v1/submissions",
+            // Who
+            UserId         = entry.UserId,                        // e.g., "SRXGLOBAL\\svc-myinvois"
+            UserRole       = entry.UserRole,                      // "Service_MyInvoicing"
+            IpAddress      = entry.IpAddress,
 
-        // Result
-        Status = success ? "Success" : "Failed",
-        StatusCode = response?.StatusCode,         // e.g., "200", "DS302"
-        ErrorMessage = response?.ErrorMessage,
+            // What
+            Action         = entry.Action,                        // "MyInvois_Submit"
+            Category       = entry.Category,                      // "Integration"
+            Severity       = entry.Success ? "Info" : "Error",
 
-        // Payload (for forensics - no PII!)
-        RequestPayload = JsonSerializer.Serialize(new {
-            invoiceNumber,
-            totalAmount,
-            currencyCode
-            // NO customer names, Tax IDs, etc.
-        }),
-        ResponsePayload = response != null
-            ? JsonSerializer.Serialize(response)
-            : null,
+            // Where
+            ResourceType   = "Invoice",
+            ResourceId     = entry.InvoiceNumber,
+            Endpoint       = "POST /api/v1/submissions",
 
-        // Metadata
-        CorrelationId = correlationId,
-        Duration = durationMs,
-        RetryCount = 0,
+            // Result
+            Status         = entry.Success ? "Success" : "Failed",
+            StatusCode     = entry.StatusCode,                    // e.g., "200", "DS302"
+            ErrorMessage   = entry.ErrorMessage,
 
-        // ===== MYINVOIS-SPECIFIC EXTENSIONS =====
-        // Documented in ai/memory/02-data-model.md
-        MyInvoisUUID = response?.UUID,
-        InvoiceNumber = invoiceNumber,
-        InvoiceDate = DateTime.UtcNow.Date,
-        TotalAmount = totalAmount,
-        CurrencyCode = currencyCode
-    });
+            // Payload (no PII)
+            RequestPayload = JsonSerializer.Serialize(new {
+                entry.InvoiceNumber,
+                entry.TotalAmount,
+                entry.CurrencyCode
+                // NO customer names, Tax IDs, etc.
+            }),
+            ResponsePayload = entry.ResponseJson,
+
+            // Metadata
+            CorrelationId  = entry.CorrelationId.ToString(),
+            Duration       = entry.DurationMs,
+            RetryCount     = entry.RetryCount,
+
+            // ===== MYINVOIS-SPECIFIC EXTENSIONS =====
+            MyInvoisUUID   = entry.MyInvoisUUID,
+            InvoiceNumber  = entry.InvoiceNumber,
+            InvoiceDate    = entry.InvoiceDate.ToString("yyyy-MM-dd"),
+            TotalAmount    = entry.TotalAmount,
+            CurrencyCode   = entry.CurrencyCode
+        });
+
+        await ctx.SaveChangesAsync();
+    }
+
+    public async Task<bool> IsInvoiceAlreadySubmittedAsync(string invoiceNumber)
+    {
+        using var ctx = _contextFactory.CreateDbContext();
+        return await ctx.AuditLogs.AnyAsync(x =>
+            x.InvoiceNumber == invoiceNumber &&
+            x.Status == "Success");
+    }
+
+    public async Task<IEnumerable<AuditEntry>> GetFailedSubmissionsAsync(int maxResults = 100)
+    {
+        using var ctx = _contextFactory.CreateDbContext();
+        return await ctx.AuditLogs
+            .Where(x => x.Status == "Failed" && x.Category == "Integration")
+            .OrderByDescending(x => x.Timestamp)
+            .Take(maxResults)
+            .Select(x => new AuditEntry { /* map fields */ })
+            .ToListAsync();
+    }
+}
+```
+
+---
+
+## DI Registration
+
+```csharp
+// ServiceCollectionExtensions.cs
+services.AddDbContextFactory<AuditDbContext>(options =>
+    options.UseSqlite(configuration.GetConnectionString("AuditLog")));
+
+services.AddScoped<IAuditLogger, AuditLogger>();
+
+// Startup: ensure DB created + WAL mode enabled
+using var scope = app.Services.CreateScope();
+var ctx = scope.ServiceProvider.GetRequiredService<AuditDbContext>();
+ctx.Database.EnsureCreated();
+ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
+```
+
+---
+
+## Query Examples (LINQ via EF Core)
+
+### Failed Submissions in Last 24 Hours
+
+```csharp
+var cutoff = DateTime.UtcNow.AddHours(-24).ToString("O");
+var failed = await ctx.AuditLogs
+    .Where(x => x.Action == "MyInvois_Submit"
+             && x.Status == "Failed"
+             && string.Compare(x.Timestamp, cutoff) >= 0)
+    .OrderByDescending(x => x.Timestamp)
+    .ToListAsync();
+```
+
+### Success Rate (all-time)
+
+```csharp
+var all     = await ctx.AuditLogs.CountAsync(x => x.Action == "MyInvois_Submit");
+var success = await ctx.AuditLogs.CountAsync(x => x.Action == "MyInvois_Submit" && x.Status == "Success");
+var rate    = all > 0 ? (double)success / all * 100 : 0;
+```
+
+### Duplicate Detection (before submission)
+
+```csharp
+bool alreadySubmitted = await ctx.AuditLogs.AnyAsync(x =>
+    x.InvoiceNumber == invoiceNumber &&
+    x.Status == "Success");
+```
+
+---
+
+## Integration Test Pattern
+
+```csharp
+// Use in-memory SQLite — no Mock<IDbConnection> needed
+public class AuditLoggerIntegrationTests : IDisposable
+{
+    private readonly AuditDbContext _ctx;
+    private readonly AuditLogger _sut;
+
+    public AuditLoggerIntegrationTests()
+    {
+        var options = new DbContextOptionsBuilder<AuditDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        _ctx = new AuditDbContext(options);
+        _ctx.Database.EnsureCreated();
+
+        var factory = new TestDbContextFactory(_ctx);
+        _sut = new AuditLogger(factory, NullLogger<AuditLogger>.Instance);
+    }
+
+    [Fact]
+    public async Task LogSubmission_Success_InsertsRow()
+    {
+        await _sut.LogSubmissionAsync(new AuditEntry { /* ... */ });
+        var count = await _ctx.AuditLogs.CountAsync();
+        count.Should().Be(1);
+    }
+
+    public void Dispose() => _ctx.Dispose();
 }
 ```
 
@@ -84,18 +212,19 @@ public async Task LogSubmissionAsync(
 ## ✅ Key Rules
 
 ### DO:
-- ✅ Use standard workspace fields
+- ✅ Use `IDbContextFactory<AuditDbContext>` (thread-safe, one context per operation)
+- ✅ Store timestamps as ISO 8601 UTC string (`DateTime.UtcNow.ToString("O")`)
+- ✅ Store GUIDs as string (`.ToString()`)
 - ✅ Log both success AND failure
 - ✅ Include correlation ID for tracing
-- ✅ Record duration for performance tracking
-- ✅ Use UTC timestamps (SQL: `SYSUTCDATETIME()`)
+- ✅ Enable WAL mode on startup (`PRAGMA journal_mode=WAL`)
 
 ### DON'T:
 - ❌ Log PII (Tax IDs, customer names, emails, phones)
-- ❌ Skip logging on success (log EVERYTHING)
-- ❌ Use local time (always UTC)
-- ❌ Modify audit logs after insert (immutable)
-- ❌ Log full request/response with sensitive data
+- ❌ Use a single shared `DbContext` across async operations (not thread-safe)
+- ❌ Use local time — always UTC
+- ❌ Modify audit log rows after insert (immutable, append-only)
+- ❌ Hardcode the connection string — use User Secrets / environment variable
 
 ---
 
@@ -105,7 +234,7 @@ public async Task LogSubmissionAsync(
 - Invoice numbers
 - Amounts and currency codes
 - Status codes and error codes
-- Timestamps
+- Timestamps (UTC)
 - User Windows ID / service account
 - Correlation IDs
 - MyInvois UUID (public identifier)
@@ -120,42 +249,9 @@ public async Task LogSubmissionAsync(
 
 ---
 
-## 📊 Query Examples
-
-### Failed Submissions in Last 24 Hours
-
-```sql
-SELECT
-    ResourceId AS InvoiceNumber,
-    StatusCode,
-    ErrorMessage,
-    Timestamp
-FROM [dbo].[AuditLog]
-WHERE
-    Action = 'MyInvois_Submit'
-    AND Status = 'Failed'
-    AND Timestamp >= DATEADD(HOUR, -24, SYSUTCDATETIME())
-ORDER BY Timestamp DESC;
-```
-
-### Success Rate by Day
-
-```sql
-SELECT
-    CAST(Timestamp AS DATE) AS SubmissionDate,
-    COUNT(*) AS TotalSubmissions,
-    SUM(CASE WHEN Status = 'Success' THEN 1 ELSE 0 END) AS Successful,
-    (SUM(CASE WHEN Status = 'Success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) AS SuccessRate
-FROM [dbo].[AuditLog]
-WHERE Action = 'MyInvois_Submit'
-GROUP BY CAST(Timestamp AS DATE)
-ORDER BY SubmissionDate DESC;
-```
-
----
-
 ## 🔗 Related
 
-- [WORKSPACE_RULES.md](../../.github/WORKSPACE_RULES.md) - Standard audit schema
-- [ai/memory/02-data-model.md](../memory/02-data-model.md) - MyInvois extensions
-- [Configuration Pattern](configuration.md) - How to configure audit logger
+- [ADR-014 — SQLite Storage Decision](../memory/09-implementation-decisions.md)
+- [decision-001-sqlite-audit-storage.md](../evidence/decision-001-sqlite-audit-storage.md)
+- [WORKSPACE_RULES.md](../../.github/WORKSPACE_RULES.md) — Standard audit schema & SQLite conditions
+- [ai/memory/02-data-model.md](../memory/02-data-model.md) — MyInvois-specific field extensions

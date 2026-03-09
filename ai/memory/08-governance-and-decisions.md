@@ -1,6 +1,6 @@
 # Governance and Decisions - MyInvois-Service
 
-**Last Updated:** February 6, 2026  
+**Last Updated:** March 9, 2026
 **Status:** Active  
 **Owner:** IT Manager + Finance Manager
 
@@ -138,3 +138,24 @@ It does **not** store detailed ADRs. Those are centralized elsewhere.
 ### Maintenance Windows
 - **Scheduled Maintenance**: First Saturday of month, 8 PM - 10 PM
 - **Security Patches**: Within 1 week of release (urgent patches: within 24h)
+
+---
+
+## Phase 2 Architectural Changes (March 2026)
+
+### ADR-014: SQLite Audit Storage (Approved March 7, 2026)
+
+| Field | Value |
+|-------|-------|
+| Decision | Replace SQL Server audit logger with SQLite via EF Core 8 |
+| Supersedes | ADR-003 (SQL Server for Audit Logs) — for MyInvois-Service only |
+| Approved by | IT Manager (Architecture Review) |
+| Evidence | `ai/evidence/decision-001-sqlite-audit-storage.md` |
+| Architecture Review | ✅ Signed off March 7, 2026 |
+| Approval scope | MyInvois-Service only (not workspace-wide standard change) |
+| WORKSPACE_RULES impact | WORKSPACE_RULES.md updated — SQLite now approved for IIS deployments <500 events/day |
+
+This decision is scoped to MyInvois-Service. The workspace-wide standard (WORKSPACE_RULES.md) has
+been updated to recognise SQLite as an approved alternative for self-hosted IIS deployments where
+the volume is <500 audit events/day, BitLocker encryption is enabled on the server volume, and
+NTFS ACL restricts access to the App Pool identity.

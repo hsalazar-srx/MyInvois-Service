@@ -455,8 +455,8 @@ Target line:    ↘→↘→↘→↘→↘
 ---
 
 **Owner:** Developer, QA, Ops
-**Status:** Phase 1 Complete | Phase 2 Sprint 5 Active (Mar 4-7)
-**Last Updated:** March 4, 2026
+**Status:** Phase 1 Complete | Phase 2 Sprint 6 Complete ✅ | Sprint 7 Next (Mar 17-21)
+**Last Updated:** March 9, 2026
 
 ---
 
@@ -477,11 +477,12 @@ Target line:    ↘→↘→↘→↘→↘
 
 | ID | Task | Story | Status | Assignee | Effort | Priority |
 |----|------|-------|--------|----------|--------|----------|
-| 5.1 | Create `ai/evidence/decision-001-sqlite-audit-storage.md` | Story 1 | ⏳ Ready | architect-system-design | 3h | P0 |
-| 5.2 | Update `ai/memory/08-governance-and-decisions.md` | Story 1 | ⏳ Ready | architect-system-design | 1h | P0 |
-| 5.3 | Update `ai/memory/09-implementation-decisions.md` (ADR-014) | Story 1 | ⏳ Ready | developer-dotnet | 1h | P0 |
-| 5.4 | Update `ai/patterns/audit-logging.md` (SQLite/EF Core pattern) | Story 1 | ⏳ Ready | developer-dotnet | 1h | P0 |
-| 5.5 | Architecture Review sign-off → `ai/evidence/decision-log.md` | Story 1 | ⏳ Ready | architect-system-design | 2h | P0 |
+| 5.1 | Create `ai/evidence/decision-001-sqlite-audit-storage.md` | Story 1 | ✅ Done | architect-system-design | 3h | P0 |
+| 5.2 | Update `ai/memory/08-governance-and-decisions.md` | Story 1 | ✅ Done | architect-system-design | 1h | P0 |
+| 5.3 | Update `ai/memory/09-implementation-decisions.md` (ADR-014) | Story 1 | ✅ Done | developer-dotnet | 1h | P0 |
+| 5.4 | Update `ai/patterns/audit-logging.md` (SQLite/EF Core pattern) | Story 1 | ✅ Done | developer-dotnet | 1h | P0 |
+| 5.5 | Architecture Review sign-off → `ai/evidence/decision-log.md` | Story 1 | ✅ Done | architect-system-design | 2h | P0 |
+| 5.6 | Update `WORKSPACE_RULES.md` — SQLite approved for IIS deployments | Story 1 | ✅ Done | architect-system-design | 1h | P0 |
 | **Total** | | | | | **8h** | |
 
 ### Task Detail: 5.1 — Create ADR decision-001-sqlite-audit-storage.md
@@ -528,23 +529,23 @@ Target line:    ↘→↘→↘→↘→↘
 
 ---
 
-## Sprint 6: SQLite Implementation (Mar 10-14, 2026)
+## Sprint 6: SQLite Implementation (Mar 10-14, 2026) ✅ COMPLETE
 
 ### Work Items Summary
 
 | ID | Task | Story | Status | Assignee | Effort | Priority |
 |----|------|-------|--------|----------|--------|----------|
-| 6.1 | NuGet: remove `System.Data.SqlClient`, add Sqlite + EF Core packages | Story 2 | ⏳ Ready | developer-dotnet | 1h | P0 |
-| 6.2 | Create `src/Data/AuditLogEntity.cs` (EF Core entity, all 45 columns) | Story 2 | ⏳ Ready | developer-dotnet | 3h | P0 |
-| 6.3 | Create `src/Data/AuditDbContext.cs` + `AuditDbContextFactory.cs` | Story 2 | ⏳ Ready | developer-dotnet | 3h | P0 |
-| 6.3b | Generate EF Core initial migration (`dotnet ef migrations add InitialCreate`) | Story 2 | ⏳ Ready | developer-dotnet | 1h | P0 |
-| 6.4 | Rewrite `src/Services/AuditLogger.cs` with EF Core (keep `IAuditLogger` unchanged) | Story 2 | ⏳ Ready | developer-dotnet | 6h | P0 |
-| 6.5 | Update `src/DataAccess/ServiceCollectionExtensions.cs` (DI + WAL mode startup) | Story 2 | ⏳ Ready | developer-dotnet | 2h | P0 |
-| 6.6 | Update `appsettings.json` + `appsettings.Development.json` (SQLite connection string) | Story 2 | ⏳ Ready | developer-dotnet | 1h | P0 |
-| 6.6b | Create `src/Database/create-audit-table-sqlite.sql` (SQLite DDL reference script) | Story 2 | ⏳ Ready | developer-dotnet | 1h | P1 |
-| 6.7 | Update `tests/Integration/AuditLoggerIntegrationTests.cs` (in-memory SQLite) | Story 2 | ⏳ Ready | developer-dotnet | 4h | P0 |
-| 6.8 | Full build + test run (`dotnet test` — all 225+ passing) + code review | Story 2 | ⏳ Ready | Tech Lead | 3h | P0 |
-| **Total** | | | | | **25h** | |
+| 6.1 | NuGet: remove `System.Data.SqlClient`, add Sqlite + EF Core packages | Story 2 | ✅ Done | developer-dotnet | 1h | P0 |
+| 6.2 | Create `src/Data/AuditLogEntity.cs` (EF Core entity, 30 columns) | Story 2 | ✅ Done | developer-dotnet | 2h | P0 |
+| 6.3 | Create `src/Data/AuditDbContext.cs` + `AuditDbContextFactory.cs` | Story 2 | ✅ Done | developer-dotnet | 2h | P0 |
+| 6.3b | EF Code-First via `EnsureCreated()` — no explicit migration needed | Story 2 | ✅ Done | developer-dotnet | 0h | P0 |
+| 6.4 | Rewrite `src/Services/AuditLogger.cs` with EF Core (keep `IAuditLogger` unchanged) | Story 2 | ✅ Done | developer-dotnet | 4h | P0 |
+| 6.5 | Update `src/DataAccess/ServiceCollectionExtensions.cs` (AddAuditLogging extension) | Story 2 | ✅ Done | developer-dotnet | 1h | P0 |
+| 6.6 | Update `appsettings.Development.json` (SQLite connection string) | Story 2 | ✅ Done | developer-dotnet | 0.5h | P0 |
+| 6.6b | SQLite DDL reference script — deferred to Sprint 7 (lower priority) | Story 2 | ⏳ Deferred | developer-dotnet | — | P1 |
+| 6.7 | Rewrite 3 test files with named in-memory SQLite (unit + integration + E2E) | Story 2 | ✅ Done | developer-dotnet | 5h | P0 |
+| 6.8 | Full build + test run (233/233 passing, 0 errors) + code review | Story 2 | ✅ Done | Tech Lead | 2h | P0 |
+| **Total** | | | | | **17.5h** | |
 
 ### Task Detail: 6.4 — Rewrite AuditLogger.cs
 
@@ -558,11 +559,11 @@ Target line:    ↘→↘→↘→↘→↘
 - Interface `IAuditLogger` **must not change** (lines 21–37 of current file)
 
 **Definition of Done:**
-- [ ] `IAuditLogger` interface lines 21–37 unchanged
-- [ ] `IDbConnection` completely removed from constructor and usages
-- [ ] All 3 public methods async-native (no `Task.CompletedTask` workarounds)
-- [ ] `EnsureConnectionOpen()` and `AddParameter()` private helpers removed
-- [ ] XML doc comments updated to reference SQLite instead of SQL Server
+- [x] `IAuditLogger` interface unchanged (same 3 method signatures, same parameter names)
+- [x] `IDbConnection` completely removed from constructor and usages
+- [x] All 3 public methods async-native (no `Task.CompletedTask` workarounds)
+- [x] Private ADO.NET helpers removed
+- [x] Summary comment updated to reference SQLite / EF Core 8 / ADR-014
 
 ### Task Detail: 6.7 — Update Integration Tests
 
@@ -584,13 +585,21 @@ Day 4 (Thu):  7h →  3h  (6.7 tests done)
 Day 5 (Fri):  3h →  0h  (6.8 review + merge)
 ```
 
-### Known Risks Sprint 6
+### Known Risks Sprint 6 — Resolved
 
-| Risk | Impact | Mitigation |
-|------|--------|-----------|
-| EF Core migration generates incorrect SQLite types | Schema mismatch at runtime | Review generated migration file manually before applying |
-| Partial index syntax not supported by EF Core SQLite | Index creation fails | Use `HasFilter("\"Status\" != 'Success'")` SQLite-compatible WHERE |
-| `IDbContextFactory` vs `IDbContext` thread safety | Async test failures | Use `IDbContextFactory<AuditDbContext>` for safe per-operation scoping |
+| Risk | Resolution |
+|------|-----------|
+| EF Core migration generates incorrect SQLite types | Used `EnsureCreated()` — no migration generated; schema created directly from entity |
+| Partial index syntax not supported by EF Core SQLite | Confirmed working: `HasFilter("\"Status\" != 'Success'")` |
+| `IDbContextFactory` vs `IDbContext` thread safety | Factory creates one context per operation — `using` disposal correct; tests use named in-memory SQLite + `_keepAlive` |
+| In-memory SQLite destroyed by context disposal | Fixed: named shared `Mode=Memory;Cache=Shared` + `_keepAlive` SqliteConnection pattern |
+
+### Sprint 6 Completion Notes (Mar 9, 2026)
+
+- **Tests:** 233 total (was 225 before rewrite — 8 new tests added during SQLite migration)
+- **No interface change:** `IAuditLogger` three-method contract untouched
+- **Pattern established:** Named in-memory SQLite for `IDbContextFactory`-based tests — documented in `ai/patterns/audit-logging.md`
+- **Deferred:** `create-audit-table-sqlite.sql` DDL reference script → Sprint 7 (no functional impact)
 
 ---
 

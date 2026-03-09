@@ -1,8 +1,11 @@
 namespace MyInvois.Service.DataAccess;
 
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using MyInvois.Service.Configuration;
+using MyInvois.Service.Data;
+using MyInvois.Service.Services;
 
 // Uses skill: architecture/configuration-management v1.0+
 
@@ -55,6 +58,27 @@ public static class ServiceCollectionExtensions
                     $"Unknown MovexDb:PartyDataSource '{settings.PartyDataSource}'. " +
                     "Valid values: 'Placeholder', 'MovexMaster'.");
         }
+
+        return services;
+    }
+
+    /// <summary>
+    /// Register SQLite audit logging services (ADR-014).
+    /// Configures IDbContextFactory&lt;AuditDbContext&gt; and IAuditLogger.
+    /// WAL mode must be enabled by the host after DI is built:
+    ///   ctx.Database.EnsureCreated();
+    ///   ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
+    /// </summary>
+    public static IServiceCollection AddAuditLogging(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddDbContextFactory<AuditDbContext>(options =>
+            options.UseSqlite(
+                configuration.GetConnectionString("AuditLog")
+                ?? "Data Source=./data/audit.db"));
+
+        services.AddScoped<IAuditLogger, AuditLogger>();
 
         return services;
     }
