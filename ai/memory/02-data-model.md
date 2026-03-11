@@ -249,9 +249,9 @@ To avoid accidental inclusion of non-invoice records (payments, adjustments, rev
 | 90 | Reversal Transaction |
 
 **Current service behavior (`DirectQueryDataSource`)**
-- AP extracts only supplier invoices via `p.eptrcd = 10`.
-- AR extracts records via configurable `ArTransCode` (default `"10"`, customer invoice).
-- This alignment ensures invoice submission batches do not include payment/adjustment/reversal ledger transactions.
+- AP currently does **not** filter by `p.eptrcd`; all posting codes returned by the query (invoices, payments, adjustments, reversals, etc.) are included.
+- AR extracts records via configurable `ArTransCode` (default `"10"`, customer invoice), which limits AR submissions to specific transaction codes.
+- Only the AR side is currently constrained by transaction code; excluding non-invoice transactions on the AP side would require enabling an additional `p.eptrcd = 10` filter in the service.
 
 ### Input Model: `MovexInvoice`
 
