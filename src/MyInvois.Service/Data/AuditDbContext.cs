@@ -7,7 +7,10 @@ using Microsoft.EntityFrameworkCore;
 /// Follows WORKSPACE_RULES standard schema: indexes, check constraints, WAL mode.
 /// ADR-014: SQLite via EF Core 8 (Phase 2, March 2026).
 /// File path (production): ./data/audit.db (relative to AppContext.BaseDirectory)
-/// File path (tests): Data Source=:memory:
+/// File path (tests): named shared in-memory SQLite, e.g.
+///   Data Source=AuditTests;Mode=Memory;Cache=Shared
+/// plus a long-lived `_keepAlive` connection to keep the DB alive
+/// across multiple CreateDbContext() calls.
 /// </summary>
 public class AuditDbContext : DbContext
 {
