@@ -49,17 +49,21 @@ public class DirectQueryDataSource : IInvoiceDataSource
             fromDate.ToString("yyyyMMdd"), string.Join(",", _settings.ActiveCompanyCodes));
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
-        var apWhere = "p.epacdt >= ?";
-        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
-        var parameters = new DynamicParameters();
-        // Positional parameters: 0=fromDate, 1=arDivision, 2=arTransCode, 3=arStatus, 4=arMinYear
-        parameters.Add("p0", ToMovexDate(fromDate));
-        parameters.Add("p1", _settings.ArDivision);
-        parameters.Add("p2", _settings.ArTransCode);
-        parameters.Add("p3", _settings.ArCustomerStatus);
-        parameters.Add("p4", _settings.ArMinYear);
+        // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
+        var apWhere = "p.epacdt >= ? "; // AND p.eptrcd = 10";
+        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
-        return await QueryAllCompaniesAsync(apWhere, arWhere, parameters, cancellationToken);
+        var apParams = new DynamicParameters();
+        apParams.Add("p0", ToMovexDate(fromDate));
+
+        var arParams = new DynamicParameters();
+        arParams.Add("p0", ToMovexDate(fromDate));
+        arParams.Add("p1", _settings.ArDivision);
+        arParams.Add("p2", _settings.ArTransCode);
+        arParams.Add("p3", _settings.ArCustomerStatus);
+        arParams.Add("p4", _settings.ArMinYear);
+
+        return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
 
     public async Task<RawInvoiceRecord?> GetInvoiceByIdAsync(string invoiceNumber, string invoiceType, CancellationToken cancellationToken = default)
@@ -81,7 +85,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
             if (invoiceType == "AP")
             {
-                var sql = BuildApHeaderSql(schema, "TRIM(p.epsino) = ?");
+                var sql = BuildApHeaderSql(schema, "TRIM(p.epsino) = ?");// AND p.eptrcd = 10");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
 
@@ -97,7 +101,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ?");
+                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND ESCHNO = 0 AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
@@ -131,18 +135,23 @@ public class DirectQueryDataSource : IInvoiceDataSource
             fromDate.ToString("yyyyMMdd"), toDate.ToString("yyyyMMdd"));
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
-        var apWhere = "p.epacdt BETWEEN ? AND ?";
-        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
-        var parameters = new DynamicParameters();
-        // Positional parameters: 0=fromDate, 1=toDate, 2=arDivision, 3=arTransCode, 4=arStatus, 5=arMinYear
-        parameters.Add("p0", ToMovexDate(fromDate));
-        parameters.Add("p1", ToMovexDate(toDate));
-        parameters.Add("p2", _settings.ArDivision);
-        parameters.Add("p3", _settings.ArTransCode);
-        parameters.Add("p4", _settings.ArCustomerStatus);
-        parameters.Add("p5", _settings.ArMinYear);
+        // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
+        var apWhere = "p.epacdt BETWEEN ? AND ?";// AND p.eptrcd = 10";
+        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
-        return await QueryAllCompaniesAsync(apWhere, arWhere, parameters, cancellationToken);
+        var apParams = new DynamicParameters();
+        apParams.Add("p0", ToMovexDate(fromDate));
+        apParams.Add("p1", ToMovexDate(toDate));
+
+        var arParams = new DynamicParameters();
+        arParams.Add("p0", ToMovexDate(fromDate));
+        arParams.Add("p1", ToMovexDate(toDate));
+        arParams.Add("p2", _settings.ArDivision);
+        arParams.Add("p3", _settings.ArTransCode);
+        arParams.Add("p4", _settings.ArCustomerStatus);
+        arParams.Add("p5", _settings.ArMinYear);
+
+        return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
 
     /// <summary>
@@ -162,7 +171,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
     private static int ToMovexDate(DateTime date) => date.Year * 10000 + date.Month * 100 + date.Day;
 
     private async Task<List<RawInvoiceRecord>> QueryAllCompaniesAsync(
-        string apWhereClause, string arWhereClause, DynamicParameters parameters, CancellationToken cancellationToken)
+        string apWhereClause, string arWhereClause, DynamicParameters apParameters, DynamicParameters arParameters, CancellationToken cancellationToken)
     {
         var allRecords = new List<RawInvoiceRecord>();
 
@@ -175,12 +184,10 @@ public class DirectQueryDataSource : IInvoiceDataSource
                 await using var connection = CreateConnection();
                 await connection.OpenAsync(cancellationToken);
 
-                // Query AP (Purchase) invoices - only first parameter (fromDate)
+                // Query AP (Purchase) invoices
                 var apSql = BuildApHeaderSql(schema, apWhereClause);
-                var apParams = new DynamicParameters();
-                apParams.Add("p0", parameters.Get<int>("p0")); // Only fromDate for AP
                 var apRecords = (await connection.QueryAsync<RawInvoiceRecord>(
-                    new CommandDefinition(apSql, apParams, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    new CommandDefinition(apSql, apParameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
                     .ToList();
 
                 foreach (var r in apRecords)
@@ -189,10 +196,10 @@ public class DirectQueryDataSource : IInvoiceDataSource
                     r.CompanyCode = companyCode;
                 }
 
-                // Query AR (Sales) invoices — no GstAmount column in fsledg (all parameters)
+                // Query AR (Sales) invoices — no GstAmount column in fsledg
                 var arSql = BuildArHeaderSql(schema, arWhereClause);
                 var arRecords = (await connection.QueryAsync<RawInvoiceRecord>(
-                    new CommandDefinition(arSql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    new CommandDefinition(arSql, arParameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
                     .ToList();
 
                 foreach (var r in arRecords)
@@ -240,7 +247,11 @@ public class DirectQueryDataSource : IInvoiceDataSource
             p.epvtam AS GstAmount,
             TRIM(g.egait1) AS GlCode
         FROM {schema}.fpledg p
-        LEFT JOIN {schema}.fgledg g ON p.epvono = g.egvono
+        LEFT JOIN (
+            SELECT egvono, MIN(egait1) AS egait1
+            FROM {schema}.fgledg
+            GROUP BY egvono
+        ) g ON p.epvono = g.egvono
         WHERE {whereClause}";
 
     private static string BuildArHeaderSql(string schema, string whereClause) =>
