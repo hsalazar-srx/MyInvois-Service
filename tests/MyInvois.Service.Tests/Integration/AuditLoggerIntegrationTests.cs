@@ -1,65 +1,67 @@
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
+using MyInvois.Service.Data;
 using MyInvois.Service.Models;
 using MyInvois.Service.Services;
-using System.Data;
 
 namespace MyInvois.Service.Tests.Integration;
 
 /// <summary>
-/// Integration tests for AuditLogger SQL Server persistence
-/// Uses skill: architecture/audit-logging-framework v1.0+ (ISO 27001 compliant)
-///
-/// Tests the full audit logging lifecycle:
-/// Insert → Query → Duplicate detection → Failed submissions query
-///
-/// Uses in-memory IDbConnection mock to simulate SQL Server behavior.
-/// For true database integration, use [Trait("Category", "Database")] against staging.
+/// Integration tests for AuditLogger with SQLite (ADR-014).
+/// Uses a named shared in-memory SQLite database — tests verify actual DB state after operations.
+/// Full lifecycle: Insert → Query → Duplicate detection → Failed submissions query.
 /// </summary>
 [Trait("Category", "Integration")]
-public class AuditLoggerIntegrationTests
+public class AuditLoggerIntegrationTests : IDisposable
 {
-    private readonly Mock<IDbConnection> _dbConnectionMock;
-    private readonly Mock<IDbCommand> _dbCommandMock;
-    private readonly Mock<IDataParameterCollection> _parametersMock;
-    private readonly Mock<ILogger<AuditLogger>> _loggerMock;
+    private readonly SqliteConnection _keepAlive;
+    private readonly DbContextOptions<AuditDbContext> _options;
     private readonly AuditLogger _auditLogger;
 
     public AuditLoggerIntegrationTests()
     {
-        _dbConnectionMock = new Mock<IDbConnection>();
-        _dbCommandMock = new Mock<IDbCommand>();
-        _parametersMock = new Mock<IDataParameterCollection>();
-        _loggerMock = new Mock<ILogger<AuditLogger>>();
+        var connString = $"Data Source=audit_int_{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
 
-        _dbCommandMock.Setup(c => c.Parameters).Returns(_parametersMock.Object);
-        _dbCommandMock.Setup(c => c.CreateParameter()).Returns(new Mock<IDbDataParameter>().Object);
-        _dbConnectionMock.Setup(c => c.CreateCommand()).Returns(_dbCommandMock.Object);
-        _dbConnectionMock.Setup(c => c.State).Returns(ConnectionState.Open);
+        _keepAlive = new SqliteConnection(connString);
+        _keepAlive.Open();
 
-        _auditLogger = new AuditLogger(_dbConnectionMock.Object, _loggerMock.Object);
+        _options = new DbContextOptionsBuilder<AuditDbContext>()
+            .UseSqlite(connString)
+            .Options;
+
+        using var ctx = new AuditDbContext(_options);
+        ctx.Database.EnsureCreated();
+
+        _auditLogger = new AuditLogger(
+            new IntegrationOptionsFactory(_options),
+            new Mock<ILogger<AuditLogger>>().Object);
     }
+
+    public void Dispose() => _keepAlive.Dispose();
+
+    private AuditDbContext NewCtx() => new(_options);
 
     [Fact]
     public async Task LogSubmission_Success_ThenQueryDuplicate_ReturnsTrue()
     {
-        // Arrange - Log a successful submission
+        // Arrange
         var result = TestDataFactory.CreateSuccessResult("INV-DUP-CHECK");
         var document = TestDataFactory.CreateValidDocument("INV-DUP-CHECK");
 
-        _dbCommandMock.Setup(c => c.ExecuteNonQuery()).Returns(1);
-
-        // Act - Log the submission
+        // Act — log the submission
         await _auditLogger.LogSubmission(result, document);
 
-        // Assert - ExecuteNonQuery was called (insert happened)
-        _dbCommandMock.Verify(c => c.ExecuteNonQuery(), Times.Once);
+        // Assert — row exists in DB
+        using (var ctx = NewCtx())
+        {
+            var count = await ctx.AuditLogs.CountAsync();
+            count.Should().Be(1);
+        }
 
-        // Setup - Now check duplicate detection returns true
-        _dbCommandMock.Setup(c => c.ExecuteScalar()).Returns(1);
-
-        // Act - Check if already submitted
+        // Act — check duplicate
         var isDuplicate = await _auditLogger.IsInvoiceAlreadySubmitted("INV-DUP-CHECK");
 
         // Assert
@@ -69,26 +71,11 @@ public class AuditLoggerIntegrationTests
     [Fact]
     public async Task LogSubmission_Failed_ThenQueryFailed_ReturnsList()
     {
-        // Arrange - Log a failed submission
+        // Arrange
         var result = TestDataFactory.CreateFailedResult("INV-FAIL-001", "DS302", "Duplicate submission");
-        _dbCommandMock.Setup(c => c.ExecuteNonQuery()).Returns(1);
-
-        await _auditLogger.LogSubmission(result);
-
-        // Now query failed submissions
-        var callCount = 0;
-        var readerMock = new Mock<IDataReader>();
-        readerMock.Setup(r => r.Read()).Returns(() => ++callCount <= 1); // 1 row
-        readerMock.Setup(r => r.GetString(0)).Returns("INV-FAIL-001");
-        readerMock.Setup(r => r.GetString(1)).Returns("Failed");
-        readerMock.Setup(r => r.GetString(2)).Returns("DS302");
-        readerMock.Setup(r => r.GetString(3)).Returns("Duplicate submission");
-        readerMock.Setup(r => r.GetDateTime(4)).Returns(DateTime.UtcNow);
-        readerMock.Setup(r => r.IsDBNull(It.IsAny<int>())).Returns(false);
-
-        _dbCommandMock.Setup(c => c.ExecuteReader()).Returns(readerMock.Object);
 
         // Act
+        await _auditLogger.LogSubmission(result);
         var failedList = await _auditLogger.GetFailedSubmissions();
 
         // Assert
@@ -99,50 +86,61 @@ public class AuditLoggerIntegrationTests
     }
 
     [Fact]
-    public async Task LogSubmission_WithDocumentDetails_IncludesAllParameters()
+    public async Task LogSubmission_WithDocumentDetails_MapsFinancialFields()
     {
         // Arrange
         var result = TestDataFactory.CreateSuccessResult("INV-DETAIL-001");
         var document = TestDataFactory.CreateValidDocument("INV-DETAIL-001");
 
-        _dbCommandMock.Setup(c => c.ExecuteNonQuery()).Returns(1);
-
         // Act
         await _auditLogger.LogSubmission(result, document);
 
-        // Assert - verify parameters were added (13 fields per insert)
-        _parametersMock.Verify(
-            p => p.Add(It.IsAny<IDbDataParameter>()),
-            Times.Exactly(13));
+        // Assert — verify financial fields mapped from document
+        using var ctx = NewCtx();
+        var entry = await ctx.AuditLogs.SingleAsync();
+        entry.InvoiceNumber.Should().Be("INV-DETAIL-001");
+        entry.Status.Should().Be("Success");
+        entry.TotalAmount.Should().BeGreaterThan(0);
+        entry.CurrencyCode.Should().NotBeNullOrEmpty();
+        entry.AuditId.Should().NotBeNullOrEmpty();
+        entry.Timestamp.Should().NotBeNullOrEmpty();
     }
 
     [Fact]
     public async Task IsInvoiceAlreadySubmitted_NewInvoice_ReturnsFalse()
     {
-        // Arrange - No prior submissions
-        _dbCommandMock.Setup(c => c.ExecuteScalar()).Returns(0);
-
-        // Act
         var isDuplicate = await _auditLogger.IsInvoiceAlreadySubmitted("INV-BRAND-NEW");
 
-        // Assert
         isDuplicate.Should().BeFalse();
     }
 
     [Fact]
-    public async Task LogSubmission_ConnectionClosed_OpensConnectionBeforeInsert()
+    public async Task LogSubmission_MultipleFailed_GetFailedSubmissions_ReturnsAllInDescendingOrder()
     {
-        // Arrange
-        _dbConnectionMock.Setup(c => c.State).Returns(ConnectionState.Closed);
-        _dbCommandMock.Setup(c => c.ExecuteNonQuery()).Returns(1);
-
-        var result = TestDataFactory.CreateSuccessResult("INV-CONN-001");
+        // Arrange — 3 failed submissions
+        var invoices = new[] { "INV-A", "INV-B", "INV-C" };
+        foreach (var inv in invoices)
+        {
+            await _auditLogger.LogSubmission(
+                TestDataFactory.CreateFailedResult(inv, "DS302", "Test failure"));
+        }
 
         // Act
-        await _auditLogger.LogSubmission(result);
+        var failedList = await _auditLogger.GetFailedSubmissions();
 
-        // Assert - Connection was opened
-        _dbConnectionMock.Verify(c => c.Open(), Times.Once);
-        _dbCommandMock.Verify(c => c.ExecuteNonQuery(), Times.Once);
+        // Assert — all 3 returned, in descending order by timestamp
+        failedList.Should().HaveCount(3);
+        failedList.Should().OnlyContain(x => x.Status == "Failed");
+        failedList.Should().BeInDescendingOrder(x => x.Timestamp);
     }
+}
+
+/// <summary>
+/// Test helper: creates a fresh AuditDbContext per call so AuditLogger can safely dispose each one.
+/// </summary>
+file sealed class IntegrationOptionsFactory : IDbContextFactory<AuditDbContext>
+{
+    private readonly DbContextOptions<AuditDbContext> _options;
+    public IntegrationOptionsFactory(DbContextOptions<AuditDbContext> options) => _options = options;
+    public AuditDbContext CreateDbContext() => new(_options);
 }
