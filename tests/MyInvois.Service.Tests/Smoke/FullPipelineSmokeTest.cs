@@ -61,7 +61,8 @@ public class FullPipelineSmokeTest
         try
         {
             // Test with current month's date range
-            var fromDate = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+            var now = DateTime.UtcNow;
+            var fromDate = new DateTime(now.Year, now.Month, 1);
             var toDate = fromDate.AddMonths(1).AddSeconds(-1);
             
             _output.WriteLine($"Querying invoices from {fromDate:yyyy-MM-dd} to {toDate:yyyy-MM-dd}...");
@@ -166,7 +167,7 @@ public class FullPipelineSmokeTest
             Options.Create(apiSettings),
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
-        // --- MOCK Audit Logger (no SQL Server needed) ---
+        // --- MOCK Audit Logger  ---
         var auditLoggerMock = new Mock<IAuditLogger>();
         auditLoggerMock.Setup(a => a.IsInvoiceAlreadySubmitted(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
@@ -217,7 +218,11 @@ public class FullPipelineSmokeTest
         if (result.TotalInvoices == 0)
         {
             _output.WriteLine("⚠️ No invoices found in MOVEX for current month.");
-            _output.WriteLine("   Check: MovexDb:ActiveCompanyCodes and current month data in CMP300.");
+            var activeCompanyCodes = _configuration.GetSection("MovexDb:ActiveCompanyCodes").Get<string[]>();
+            var firstCompanyCode = (activeCompanyCodes != null && activeCompanyCodes.Length > 0)
+                ? activeCompanyCodes[0]
+                : "N/A";
+            _output.WriteLine($"   Check: MovexDb:ActiveCompanyCodes and current month data in {firstCompanyCode}.");
             return;
         }
 

@@ -35,6 +35,7 @@ Use this file for **evidence** of decisions (approvals, meeting notes, impacts),
 ---
 
 | ADR-013 | Replace MOVEX REST API with DB2 Direct Access | `ai/memory/09-implementation-decisions.md` | User-initiated architectural change; skills audit updated |
+| ADR-014 | SQLite Audit Storage via EF Core | `ai/memory/09-implementation-decisions.md` | Architecture Review approved March 7, 2026; see `ai/evidence/decision-001-sqlite-audit-storage.md` |
 
 ---
 
@@ -55,6 +56,9 @@ Use this file for **evidence** of decisions (approvals, meeting notes, impacts),
 | 2026-02-19 | DirectQueryDataSource fully implemented with Dapper+ODBC | Dev Team | 224 tests (100% pass) | Replaces NotImplementedException stubs; AP/AR header queries, batch line items, dictionary-based schema mapping |
 | 2026-02-19 | ADR-013 Gap #3 closed — DB2 driver: System.Data.Odbc (not Net.IBM.Data.Db2) | Dev Team | NuGet: System.Data.Odbc 9.0.2 | AS/400 compatibility; ODBC driver more reliable for IBM i systems |
 | 2026-02-19 | Company environment isolation: Dev uses CMP300, Prod uses CMP100 | Dev Team | appsettings.Development.json updated | ActiveCompanyCodes controls which companies are queried per environment |
+| 2026-03-04 | Phase 2 kickoff: ADR-014 authored — SQLite replaces SQL Server for audit storage | architect-system-design | `ai/evidence/decision-001-sqlite-audit-storage.md` created | `IAuditLogger` interface unchanged; Sprint 6 implements code changes |
+| 2026-03-07 | Architecture Review sign-off: ADR-014 approved | IT Manager | `decision-001-sqlite-audit-storage.md` reviewed; clean architecture confirmed, security (BitLocker + NTFS ACL) documented | Sprint 6 code changes unblocked; WORKSPACE_RULES.md updated |
+| 2026-03-09 | Sprint 5 complete: all 5 Sprint 5 deliverables created/updated | Dev Team | decision-001, ADR-014, audit-logging.md, governance docs, decision-log all updated | Sprint 6 SQLite implementation starts March 10 |
 
 ---
 

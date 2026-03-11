@@ -356,9 +356,10 @@ Enable automated e-invoicing for MOVEX ERP with ≥95% submission success rate, 
 **Decision:** 1st of month, 2-hour window  
 **Why:** Aligns with business practice, safe under rate limits
 
-### 3. SQL Server Audit
-**Decision:** Workspace standard, 7-year retention  
-**Why:** Compliance (tax law), ISO 27001, TDE encryption
+### 3. SQLite Audit (revised from SQL Server — see ADR-014)
+**Decision:** SQLite via EF Core 8, embedded on IIS server, per-project file
+**Why:** Remove SQL Server dependency; <500 invoices/day fits SQLite comfortably; OS-level encryption (BitLocker) satisfies ISO 27001 in lieu of TDE
+**Supersedes:** Original decision to use SQL Server (workspace standard for shared/enterprise deployments still applies; SQLite approved for self-hosted IIS only)
 
 ### 4. Phase 1 Scope
 **Decision:** Core submission only  
@@ -390,15 +391,50 @@ Enable automated e-invoicing for MOVEX ERP with ≥95% submission success rate, 
 
 ---
 
+## Phase 2: Audit Storage Migration (SQLite)
+
+**Start:** March 4, 2026
+**Sprints:** 5 (ADR), 6 (Implementation), 7 (Compliance)
+
+### Phase 2 Objective
+Replace SQL Server audit logging with SQLite embedded on the IIS server, eliminating the external SQL Server dependency while maintaining ISO 27001 compliance via OS-level encryption (BitLocker).
+
+### Phase 2 Scope
+
+**In Scope:**
+- Replace `System.Data.SqlClient` + ADO.NET with `Microsoft.Data.Sqlite` + EF Core 8
+- Preserve `IAuditLogger` interface (zero consumer impact)
+- WAL mode, NTFS ACL, BitLocker documentation
+- Backup runbook and security review
+
+**Out of Scope:**
+- Centralized shared audit DB with SM-Portal (see decision-001 — separate DBs chosen; revisit if SM-Portal becomes API gateway)
+- Data migration of existing SQL Server audit rows (historical data stays in SQL Server)
+- Changes to `IAuditLogger` interface or any service that calls it
+
+### Phase 2 Success Criteria
+- [ ] `audit.db` replacing SQL Server for new submissions
+- [ ] All 225+ tests passing with SQLite backend
+- [ ] `System.Data.SqlClient` removed from project
+- [ ] Architecture Review and Security Review sign-offs obtained
+- [ ] Deployment docs updated (BitLocker + backup runbook)
+
+### Phase 2 Evidence
+- `ai/evidence/decision-001-sqlite-audit-storage.md` (to be created in Sprint 5)
+- `ai/evidence/decision-log.md` (Architecture Review entry)
+
+---
+
 ## Version History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | Feb 5, 2026 | [Name] | Initial planning document |
+| 2.0 | Mar 4, 2026 | architect-system-design | Phase 2 added — SQLite audit migration; ADR-002 (SQL Server) superseded by ADR-014 |
 
 ---
 
-**Owner:** Project Manager  
-**Status:** Active  
-**Next Review:** End of Week 1 (Feb 7, 2026)
+**Owner:** Project Manager
+**Status:** Phase 1 Complete | Phase 2 In Progress (Sprint 5)
+**Next Review:** Sprint 5 close — Mar 7, 2026
 

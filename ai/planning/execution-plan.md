@@ -890,6 +890,748 @@ File: `tests/MyInvois.Service.Tests/Validators/TINValidatorTests.cs`
 ---
 
 **Owner:** Developer
-**Status:** Sprint 2 COMPLETE, Sprint 3 In Progress — 3 Go-Live Blockers Pending (Tasks 6-8)
-**Last Updated:** February 19, 2026
+**Status:** Phase 1 Complete (Tasks 1-9) | Phase 2 In Progress (Tasks 10-15 — Sprint 5 active)
+**Last Updated:** March 4, 2026
+
+---
+
+---
+
+# Phase 2: Audit Storage Migration (SQLite)
+
+**Initiative:** MVAI-P2
+**Sprints:** 5 (Tasks 10-11), 6 (Tasks 12-14), 7 (Task 15)
+**Cross-project:** SM-Portal execution-plan.md Phase 2 runs in parallel
+**Plan ref:** `C:\Users\hsalazar\.claude\plans\harmonic-napping-hollerith.md` (Story 2)
+
+> **Why this phase exists:** Users requested removal of the SQL Server dependency for audit logs. The service runs on a self-hosted IIS server with <500 invoices/day — SQLite via EF Core is the appropriate embedded replacement. `IAuditLogger` interface is preserved; no consumers are impacted.
+
+---
+
+## Task 10: ADR + AI Context Updates ⏳ IN PROGRESS
+
+**Owner:** architect-system-design
+**Sprint:** 5 (Mar 4-7)
+**Effort:** 8h
+**Backlog refs:** 5.1, 5.2, 5.3, 5.4, 5.5
+**Success Criteria:**
+- [ ] `ai/evidence/decision-001-sqlite-audit-storage.md` created and Architecture Review sign-off obtained
+- [ ] `ai/memory/08-governance-and-decisions.md` updated with ADR reference
+- [ ] `ai/memory/09-implementation-decisions.md` updated (ADR-014 added, ADR-002 superseded)
+- [ ] `ai/patterns/audit-logging.md` updated with SQLite/EF Core pattern
+- [ ] No code changes made this task
+
+### Prerequisites
+- [ ] Read `ai/evidence/` existing files to match numbering convention
+- [ ] Read `ai/memory/09-implementation-decisions.md` to understand current ADR numbering (next is ADR-014)
+- [ ] Read `ai/patterns/audit-logging.md` to understand current SQL Server pattern
+
+### Step 1: Create decision-001-sqlite-audit-storage.md (3h)
+
+File: `ai/evidence/decision-001-sqlite-audit-storage.md`
+
+Required sections:
+```markdown
+# Decision 001: SQLite Audit Storage via EF Core
+
+**Date:** March 4, 2026
+**Status:** Proposed → Accepted
+**Authors:** architect-system-design
+**Supersedes:** ADR-002 (SQL Server Audit)
+
+## Context
+[Users requested SQL Server dependency removal; <500 invoices/day; self-hosted IIS]
+
+## Decision
+Replace System.Data.SqlClient + ADO.NET with Microsoft.Data.Sqlite + EF Core 8 (Code-First).
+Per-project SQLite file. NOT shared with SM-Portal.
+
+## Topology: Centralized vs Per-Service Considered
+[Document reasoning: MyInvois is independent batch, different schema, must work without SM-Portal]
+
+## Options Considered
+[SQL Server LocalDB, SQL Server Express, LiteDB, SQLite — why each was rejected/chosen]
+
+## Consequences
+[No TDE → BitLocker; WAL mode; NTFS ACL on ./data/audit.db; 7-year retention maintained]
+
+## Compliance Notes
+[ISO 27001 — OS-level BitLocker satisfies encryption at rest; retention managed by file growth budget]
+
+## Skills
+architecture/audit-logging-framework v1.0+
+architecture/configuration-management v1.0+
+```
+
+### Step 2: Update ai/memory/09-implementation-decisions.md (1h)
+
+Add after the last ADR entry:
+```markdown
+### ADR-014: SQLite Audit Storage via EF Core (March 4, 2026)
+**Supersedes:** ADR-002 (SQL Server Audit)
+**Decision:** Use Microsoft.Data.Sqlite + Microsoft.EntityFrameworkCore.Sqlite 8.0.*
+**Pattern:** Code-First, EnsureCreated() on startup, WAL mode PRAGMA
+**File path:** Data Source=./data/audit.db (relative to AppContext.BaseDirectory)
+**Type mappings:** GUID → TEXT (string), DATETIME2(7) → TEXT (ISO 8601)
+**DI:** IDbContextFactory<AuditDbContext> for thread-safe per-operation context
+**Test pattern:** Data Source=:memory: replaces Mock<IDbConnection>
+**Evidence:** ai/evidence/decision-001-sqlite-audit-storage.md
+```
+
+### Step 3: Update ai/patterns/audit-logging.md (1h)
+
+Replace the SQL Server / ADO.NET section. New pattern:
+```markdown
+## Audit Logging Pattern: SQLite via EF Core (Phase 2+)
+
+### Setup
+// AuditDbContext.cs
+public class AuditDbContext : DbContext
+{
+    public DbSet<AuditLogEntity> AuditLogs { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AuditLogEntity>()
+            .HasCheckConstraint("CK_AuditLog_Status",
+                "Status IN ('Success', 'Failed', 'Pending', 'Cancelled')")
+            .HasIndex(x => x.InvoiceNumber)
+                .HasFilter("\"InvoiceNumber\" IS NOT NULL");
+    }
+}
+
+// Startup: EnsureCreated + WAL mode
+using var ctx = scope.ServiceProvider.GetRequiredService<AuditDbContext>();
+ctx.Database.EnsureCreated();
+ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL");
+
+### Insert (AuditLogger.cs)
+using var ctx = _factory.CreateDbContext();
+ctx.AuditLogs.Add(entity);
+await ctx.SaveChangesAsync(cancellationToken);
+
+### Query (duplicate detection)
+return await ctx.AuditLogs
+    .AnyAsync(x => x.InvoiceNumber == invoiceNumber && x.Status == "Success", ct);
+
+### Test setup (in-memory SQLite)
+var connection = new SqliteConnection("Data Source=:memory:");
+connection.Open();
+var options = new DbContextOptionsBuilder<AuditDbContext>()
+    .UseSqlite(connection).Options;
+using var ctx = new AuditDbContext(options);
+ctx.Database.EnsureCreated();
+```
+
+### Code Review Checklist (Task 10)
+- [ ] ADR format matches existing decision records in `ai/evidence/`
+- [ ] ADR-014 number is correct (verify against existing ADR list in memory/09)
+- [ ] No code changes made — documentation only
+
+---
+
+## Task 11: NuGet Package Swap + SQLite Data Layer ⏳ PLANNED
+
+**Owner:** developer-dotnet
+**Sprint:** 6 (Mar 10 — Monday)
+**Effort:** 8h (Tasks 6.1, 6.2, 6.3, 6.3b)
+**Backlog refs:** 6.1, 6.2, 6.3, 6.3b
+
+### Prerequisites
+- [ ] Sprint 5 Architecture Review sign-off obtained (Task 10.5 complete)
+- [ ] Read `src/Database/create-audit-table.sql` — full 45-column schema to replicate
+- [ ] Read `ai/patterns/audit-logging.md` updated version (from Task 10)
+
+### Step 1: NuGet Package Changes (1h)
+
+File: `src/MyInvois.Service/MyInvois.Service.csproj`
+
+Remove:
+```xml
+<PackageReference Include="System.Data.SqlClient" Version="4.9.0" />
+```
+
+Add:
+```xml
+<PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.*" />
+<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.*" />
+<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.*">
+  <PrivateAssets>all</PrivateAssets>
+  <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+</PackageReference>
+```
+
+Verify: `dotnet restore` succeeds, `dotnet build` green.
+
+### Step 2: Create AuditLogEntity.cs (3h)
+
+File: `src/MyInvois.Service/Data/AuditLogEntity.cs`
+
+All 45 columns from `create-audit-table.sql`, mapped to C# types:
+
+```csharp
+namespace MyInvois.Service.Data;
+
+public class AuditLogEntity
+{
+    // Primary key — stored as TEXT in SQLite
+    public string AuditId { get; set; } = Guid.NewGuid().ToString();
+
+    // Timestamp — stored as TEXT ISO 8601
+    public string Timestamp { get; set; } = DateTime.UtcNow.ToString("O");
+
+    // Actor
+    public string? UserId { get; set; }
+    public string? UserRole { get; set; }
+    public string? IpAddress { get; set; }
+
+    // Action
+    public string Action { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Severity { get; set; } = "Info"; // Info | Warning | Error | Critical
+
+    // Resource
+    public string ResourceType { get; set; } = string.Empty;
+    public string ResourceId { get; set; } = string.Empty;
+    public string? Endpoint { get; set; }
+
+    // Result
+    public string Status { get; set; } = "Pending"; // Success | Failed | Pending | Cancelled
+    public string? StatusCode { get; set; }
+    public string? ErrorMessage { get; set; }
+
+    // Payloads
+    public string? RequestPayload { get; set; }
+    public string? ResponsePayload { get; set; }
+
+    // Metadata
+    public string? CorrelationId { get; set; }  // Guid stored as TEXT
+    public int? Duration { get; set; }
+    public int RetryCount { get; set; } = 0;
+
+    // MyInvois-specific
+    public string? MyInvoisUUID { get; set; }
+    public string? MyInvoisStatus { get; set; }
+    public string? MyInvoisSubmissionId { get; set; }
+
+    // MOVEX-specific
+    public string? InvoiceNumber { get; set; }
+    public string? InvoiceDate { get; set; }  // DATE stored as TEXT
+    public string? InvoiceType { get; set; }
+
+    // Financial
+    public decimal? TotalAmount { get; set; }
+    public decimal? TotalTax { get; set; }
+    public string? CurrencyCode { get; set; }
+    public decimal? ExchangeRate { get; set; }
+
+    // Validation
+    public string? ValidationErrors { get; set; }  // JSON array
+    public string? SubmissionBatchId { get; set; } // Guid stored as TEXT
+}
+```
+
+### Step 3: Create AuditDbContext.cs (2h)
+
+File: `src/MyInvois.Service/Data/AuditDbContext.cs`
+
+```csharp
+namespace MyInvois.Service.Data;
+
+public class AuditDbContext : DbContext
+{
+    public AuditDbContext(DbContextOptions<AuditDbContext> options) : base(options) { }
+
+    public DbSet<AuditLogEntity> AuditLogs { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<AuditLogEntity>(entity =>
+        {
+            entity.HasKey(e => e.AuditId);
+            entity.Property(e => e.AuditId).ValueGeneratedNever(); // we set it in entity init
+
+            // CHECK constraints (SQLite supports these)
+            entity.HasCheckConstraint("CK_AuditLog_Status",
+                "\"Status\" IN ('Success', 'Failed', 'Pending', 'Cancelled')");
+            entity.HasCheckConstraint("CK_AuditLog_Severity",
+                "\"Severity\" IN ('Info', 'Warning', 'Error', 'Critical')");
+
+            // Partial indexes (SQLite WHERE clause — supported since 3.8.9)
+            entity.HasIndex(e => new { e.Status, e.Timestamp })
+                .HasFilter("\"Status\" != 'Success'")
+                .HasDatabaseName("IX_AuditLog_Status");
+
+            entity.HasIndex(e => new { e.MyInvoisUUID, e.Timestamp })
+                .HasFilter("\"MyInvoisUUID\" IS NOT NULL")
+                .HasDatabaseName("IX_AuditLog_MyInvoisUUID");
+
+            entity.HasIndex(e => new { e.InvoiceNumber, e.Timestamp })
+                .HasFilter("\"InvoiceNumber\" IS NOT NULL")
+                .HasDatabaseName("IX_AuditLog_InvoiceNumber");
+
+            entity.HasIndex(e => new { e.SubmissionBatchId, e.Timestamp })
+                .HasFilter("\"SubmissionBatchId\" IS NOT NULL")
+                .HasDatabaseName("IX_AuditLog_SubmissionBatch");
+
+            // Standard indexes
+            entity.HasIndex(e => e.Timestamp).HasDatabaseName("IX_AuditLog_Timestamp");
+            entity.HasIndex(e => new { e.UserId, e.Timestamp }).HasDatabaseName("IX_AuditLog_User");
+            entity.HasIndex(e => new { e.Action, e.Timestamp }).HasDatabaseName("IX_AuditLog_Action");
+        });
+    }
+}
+```
+
+### Step 4: Create AuditDbContextFactory.cs (30min)
+
+File: `src/MyInvois.Service/Data/AuditDbContextFactory.cs`
+
+```csharp
+namespace MyInvois.Service.Data;
+
+// Required for: dotnet ef migrations add InitialCreate
+public class AuditDbContextFactory : IDesignTimeDbContextFactory<AuditDbContext>
+{
+    public AuditDbContext CreateDbContext(string[] args)
+    {
+        var options = new DbContextOptionsBuilder<AuditDbContext>()
+            .UseSqlite("Data Source=./data/audit.db")
+            .Options;
+        return new AuditDbContext(options);
+    }
+}
+```
+
+### Step 5: Generate EF Core Migration (30min)
+
+From `src/MyInvois.Service` directory:
+```bash
+dotnet ef migrations add InitialCreate --output-dir Migrations
+```
+
+Review the generated `Migrations/YYYYMMDD_InitialCreate.cs` — verify:
+- All 45 columns present
+- Types are SQLite-compatible (TEXT, REAL, INTEGER, NUMERIC)
+- CHECK constraints present
+- Partial indexes present (verify `WHERE` clause syntax)
+
+### Definition of Done (Task 11)
+- [ ] `dotnet restore` — no package errors
+- [ ] `dotnet build` — 0 errors, 0 warnings
+- [ ] `System.Data.SqlClient` no longer in `.csproj`
+- [ ] `AuditLogEntity.cs` has all 45 columns from `create-audit-table.sql`
+- [ ] `AuditDbContext.cs` has CHECK constraints and all 8 indexes
+- [ ] Migration generated and reviewed manually
+
+---
+
+## Task 12: Rewrite AuditLogger.cs (SQLite/EF Core) ⏳ PLANNED
+
+**Owner:** developer-dotnet
+**Sprint:** 6 (Mar 11 — Tuesday)
+**Effort:** 6h (Task 6.4)
+**Backlog ref:** 6.4
+
+### Prerequisites
+- [ ] Task 11 complete (AuditDbContext available)
+- [ ] Read current `src/MyInvois.Service/Services/AuditLogger.cs` (lines 21-37 = IAuditLogger interface — must not change)
+- [ ] Read current `src/MyInvois.Service/Models/SubmissionResult.cs` and `MyInvoiceDocument.cs` for field names
+
+### Implementation
+
+File: `src/MyInvois.Service/Services/AuditLogger.cs`
+
+**Preserve unchanged — IAuditLogger interface (lines 21-37):**
+```csharp
+public interface IAuditLogger
+{
+    Task LogSubmission(SubmissionResult result, MyInvoiceDocument? document = null,
+        CancellationToken cancellationToken = default);
+    Task<List<SubmissionResult>> GetFailedSubmissions(int maxResults = 100,
+        CancellationToken cancellationToken = default);
+    Task<bool> IsInvoiceAlreadySubmitted(string invoiceNumber,
+        CancellationToken cancellationToken = default);
+}
+```
+
+**New AuditLogger implementation:**
+
+```csharp
+public class AuditLogger : IAuditLogger
+{
+    // Uses skill: architecture/audit-logging-framework v1.0+ (SQLite variant — see ADR-014)
+    // Uses skill: architecture/configuration-management v1.0+
+    // ISO 27001 compliant: 7-year retention, immutable log entries
+    // Replaces ADO.NET/SqlClient with EF Core + SQLite (see decision-001)
+
+    private readonly IDbContextFactory<AuditDbContext> _factory;
+    private readonly ILogger<AuditLogger> _logger;
+
+    public AuditLogger(IDbContextFactory<AuditDbContext> factory, ILogger<AuditLogger> logger)
+    {
+        _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public async Task LogSubmission(SubmissionResult result, MyInvoiceDocument? document = null,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Logging submission for invoice {InvoiceNumber}, Status: {Status}",
+            result.InvoiceNumber, result.Status);
+        try
+        {
+            using var ctx = _factory.CreateDbContext();
+            ctx.AuditLogs.Add(new AuditLogEntity
+            {
+                AuditId       = Guid.NewGuid().ToString(),
+                Timestamp     = DateTime.UtcNow.ToString("O"),
+                Action        = "MyInvois_Submit",
+                Category      = "MyInvois",
+                Severity      = result.Status == "Failed" ? "Error" : "Info",
+                ResourceType  = "Invoice",
+                ResourceId    = result.InvoiceNumber ?? string.Empty,
+                Status        = result.Status ?? "Pending",
+                ErrorMessage  = result.ErrorMessage,
+                ResponsePayload = result.RawResponse,
+                InvoiceNumber = result.InvoiceNumber,
+                MyInvoisUUID  = result.MyInvoisUUID,
+                TotalAmount   = document?.TotalInclTax,
+                // ... map remaining fields from document
+            });
+            await ctx.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation("Audit log entry created for invoice {InvoiceNumber}",
+                result.InvoiceNumber);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to write audit log for invoice {InvoiceNumber}",
+                result.InvoiceNumber);
+            throw;
+        }
+    }
+
+    public async Task<bool> IsInvoiceAlreadySubmitted(string invoiceNumber,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogDebug("Checking duplicate for invoice {InvoiceNumber}", invoiceNumber);
+        try
+        {
+            using var ctx = _factory.CreateDbContext();
+            return await ctx.AuditLogs
+                .AnyAsync(x => x.InvoiceNumber == invoiceNumber && x.Status == "Success",
+                    cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to check duplicate for invoice {InvoiceNumber}",
+                invoiceNumber);
+            throw;
+        }
+    }
+
+    public async Task<List<SubmissionResult>> GetFailedSubmissions(int maxResults = 100,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogDebug("Querying failed submissions (max: {MaxResults})", maxResults);
+        try
+        {
+            using var ctx = _factory.CreateDbContext();
+            var entities = await ctx.AuditLogs
+                .Where(x => x.Status == "Failed" && x.Category == "MyInvois")
+                .OrderByDescending(x => x.Timestamp)
+                .Take(maxResults)
+                .ToListAsync(cancellationToken);
+
+            return entities.Select(e => new SubmissionResult
+            {
+                InvoiceNumber = e.InvoiceNumber,
+                Status        = e.Status,
+                ErrorCode     = e.StatusCode,
+                ErrorMessage  = e.ErrorMessage,
+                SubmittedAt   = DateTime.Parse(e.Timestamp)
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to query failed submissions");
+            throw;
+        }
+    }
+}
+```
+
+### Definition of Done (Task 12)
+- [ ] `IAuditLogger` interface (lines 21-37) **byte-for-byte unchanged**
+- [ ] `IDbConnection` completely removed — no `using System.Data`
+- [ ] `EnsureConnectionOpen()` and `AddParameter()` helpers removed
+- [ ] All 3 methods fully async (no `await Task.CompletedTask` workarounds)
+- [ ] XML doc comments updated (SQL Server → SQLite references)
+- [ ] `dotnet build` — 0 errors, 0 warnings after this task
+
+---
+
+## Task 13: DI Registration + Configuration Updates ⏳ PLANNED
+
+**Owner:** developer-dotnet
+**Sprint:** 6 (Mar 12 — Wednesday)
+**Effort:** 3h (Tasks 6.5, 6.6, 6.6b)
+**Backlog refs:** 6.5, 6.6, 6.6b
+
+### Step 1: Update ServiceCollectionExtensions.cs (2h)
+
+File: `src/MyInvois.Service/DataAccess/ServiceCollectionExtensions.cs`
+
+Remove:
+```csharp
+// OLD: IDbConnection registration (entire block)
+services.AddTransient<IDbConnection>(_ =>
+    new SqlConnection(configuration.GetConnectionString("AuditLog")));
+```
+
+Add:
+```csharp
+// NEW: EF Core + SQLite
+var auditConnectionString = configuration.GetConnectionString("AuditLog")
+    ?? "Data Source=./data/audit.db";
+
+services.AddDbContextFactory<AuditDbContext>(options =>
+    options.UseSqlite(auditConnectionString));
+
+// Ensure ./data/ directory exists and apply schema + WAL mode on startup
+services.AddHostedService<AuditDbStartupService>();
+```
+
+Create: `src/MyInvois.Service/Data/AuditDbStartupService.cs`
+```csharp
+// One-shot IHostedService that runs EnsureCreated() + WAL mode on app startup
+public class AuditDbStartupService : IHostedService
+{
+    private readonly IDbContextFactory<AuditDbContext> _factory;
+    private readonly ILogger<AuditDbStartupService> _logger;
+
+    public async Task StartAsync(CancellationToken ct)
+    {
+        using var ctx = _factory.CreateDbContext();
+        // Ensure ./data/ directory exists
+        var dbPath = ctx.Database.GetDbConnection().DataSource;
+        if (!string.IsNullOrEmpty(dbPath) && dbPath != ":memory:")
+            Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+
+        ctx.Database.EnsureCreated();
+        await ctx.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", ct);
+        _logger.LogInformation("Audit SQLite database ready at {Path}", dbPath);
+    }
+
+    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+}
+```
+
+### Step 2: Update appsettings (30min)
+
+`appsettings.json` — keep key, update comment:
+```json
+"ConnectionStrings": {
+  "AuditLog": "{{FROM_USER_SECRETS}}"
+}
+```
+
+`appsettings.Development.json`:
+```json
+"ConnectionStrings": {
+  "AuditLog": "Data Source=./data/audit.db"
+}
+```
+
+### Step 3: Create SQLite DDL Reference Script (30min)
+
+File: `src/Database/create-audit-table-sqlite.sql`
+- SQLite DDL equivalent of `create-audit-table.sql`
+- For manual schema recovery if `.db` file is lost/corrupted
+- Uses `TEXT`/`REAL`/`INTEGER`/`NUMERIC` types; no `GO` statements; no `USE` statement
+- Include `PRAGMA journal_mode=WAL;` at top
+
+### Definition of Done (Task 13)
+- [ ] `IDbConnection` DI registration removed entirely
+- [ ] `AuditDbContextFactory` registered for DI
+- [ ] `AuditDbStartupService` creates `./data/` dir on first run
+- [ ] `appsettings.Development.json` uses SQLite connection string
+- [ ] SQLite DDL reference script created
+- [ ] `dotnet build` — 0 errors, 0 warnings
+
+---
+
+## Task 14: Update Integration Tests (SQLite) ⏳ PLANNED
+
+**Owner:** developer-dotnet
+**Sprint:** 6 (Mar 13-14)
+**Effort:** 4h (Tasks 6.7, 6.8)
+**Backlog refs:** 6.7, 6.8
+
+### Prerequisites
+- [ ] Tasks 11-13 complete
+- [ ] Read current `tests/Integration/AuditLoggerIntegrationTests.cs` — understand existing test structure
+
+### Test Refactor
+
+File: `tests/MyInvois.Service.Tests/Integration/AuditLoggerIntegrationTests.cs`
+
+Replace test setup:
+```csharp
+// OLD: Mock<IDbConnection>
+var mockConn = new Mock<IDbConnection>();
+var sut = new AuditLogger(mockConn.Object, logger);
+
+// NEW: In-memory SQLite via EF Core
+private AuditDbContext CreateInMemoryContext()
+{
+    var connection = new SqliteConnection("Data Source=:memory:");
+    connection.Open(); // keep open for lifetime of test
+    var options = new DbContextOptionsBuilder<AuditDbContext>()
+        .UseSqlite(connection)
+        .Options;
+    var ctx = new AuditDbContext(options);
+    ctx.Database.EnsureCreated(); // applies schema to in-memory DB
+    return ctx;
+}
+
+private AuditLogger CreateSut(AuditDbContext ctx)
+{
+    var factory = new Mock<IDbContextFactory<AuditDbContext>>();
+    factory.Setup(f => f.CreateDbContext()).Returns(ctx);
+    return new AuditLogger(factory.Object, NullLogger<AuditLogger>.Instance);
+}
+```
+
+Test cases (same as before, now verified against real SQLite):
+1. `LogSubmission_SuccessfulSubmission_InsertsRowInSqlite`
+2. `LogSubmission_FailedSubmission_InsertsRowWithErrorMessage`
+3. `IsInvoiceAlreadySubmitted_DuplicateInvoice_ReturnsTrue`
+4. `IsInvoiceAlreadySubmitted_NewInvoice_ReturnsFalse`
+5. `GetFailedSubmissions_MultipleFailures_ReturnsOrderedList`
+
+Add after existing tests:
+6. `LogSubmission_MultipleInvoices_AllPersisted` — verifies row count
+7. `GetFailedSubmissions_WithMaxResults_RespectsLimit` — verifies Take()
+
+### Full Test Run
+
+After refactor:
+```bash
+dotnet test tests/MyInvois.Service.Tests --logger "console;verbosity=normal"
+# All 225+ tests must pass
+```
+
+### Definition of Done (Task 14)
+- [ ] No `Mock<IDbConnection>` remaining in test file
+- [ ] All 7 audit logger test cases pass
+- [ ] Full suite: 225+ tests passing (100%)
+- [ ] Code review approved by Tech Lead
+
+---
+
+## Task 15: Compliance Documentation + Smoke Test ⏳ PLANNED
+
+**Owner:** expert-myinvois-compliance + Ops Lead
+**Sprint:** 7 (Mar 17-21)
+**Effort:** 11h (Tasks 7.1-7.5)
+**Backlog refs:** 7.1, 7.2, 7.3, 7.4, 7.5
+
+### Step 1: Update docs/DEPLOYMENT.md — BitLocker + NTFS ACL (2h)
+
+Add section after existing deployment steps:
+
+```markdown
+## Audit Database — SQLite Setup
+
+### 1. Directory Creation
+The application creates `.\data\` automatically on first run.
+Verify the directory exists after first startup:
+    dir .\data\audit.db
+
+### 2. BitLocker (Required — ISO 27001)
+The IIS server volume hosting the application MUST be BitLocker-encrypted.
+Verify: `manage-bde -status C:`
+If not enabled: escalate to Ops — this is a compliance blocker.
+
+### 3. NTFS ACL — App Pool Identity Only
+Run after first deployment:
+    icacls ".\data" /inheritance:d
+    icacls ".\data" /remove "Everyone" "Users" "Authenticated Users"
+    icacls ".\data" /grant "IIS AppPool\MyInvoisService:(OI)(CI)F"
+Verify: try to open audit.db as a different user — should get Access Denied.
+
+### 4. WAL Journal File
+SQLite creates `audit.db-wal` and `audit.db-shm` during operation.
+These are also restricted by the NTFS ACL above (inherited from `.\data`).
+Do NOT delete these files while the service is running.
+```
+
+### Step 2: Write Backup Runbook (2h)
+
+Add section to `docs/DEPLOYMENT.md`:
+
+```markdown
+## Audit Database — Backup & Restore
+
+### Daily Backup (Robocopy)
+Schedule via Windows Task Scheduler (daily at 02:00):
+    robocopy "C:\inetpub\wwwroot\MyInvois-Service\data" "\\backup-server\myinvois-audit\%DATE%" audit.db /COPYALL /LOG:backup.log
+
+Note: robocopy is safe for SQLite in WAL mode (copies consistent snapshot).
+Do NOT use xcopy/copy while service is running — use robocopy only.
+
+### Restore Procedure
+1. Stop the IIS Application Pool: `Stop-WebAppPool -Name "MyInvoisService"`
+2. Copy backup file: `copy \\backup-server\myinvois-audit\{DATE}\audit.db .\data\audit.db`
+3. Delete WAL files if present: `del .\data\audit.db-wal .\data\audit.db-shm`
+4. Start the Application Pool: `Start-WebAppPool -Name "MyInvoisService"`
+5. Verify: trigger one test submission, confirm row appears in audit.db
+
+### Testing the Restore
+Monthly: copy audit.db to a temp path, open with DB Browser for SQLite,
+run: SELECT COUNT(*) FROM AuditLog WHERE Status = 'Success'
+```
+
+### Step 3: Smoke Test in IIS (2h)
+
+```bash
+# 1. Deploy to test IIS
+# 2. Run 5 test submissions (use existing smoke test or manual trigger)
+dotnet test --filter "Category=Smoke"
+
+# 3. Open audit.db in DB Browser for SQLite
+# Query: SELECT * FROM AuditLog ORDER BY Timestamp DESC LIMIT 5
+# Verify: 5 rows, Status populated, InvoiceNumber populated
+
+# 4. Verify WAL mode
+# Query: PRAGMA journal_mode;
+# Expected result: wal
+
+# 5. Verify NTFS ACL
+icacls ".\data\audit.db"
+# Expected: only IIS AppPool\MyInvoisService listed
+```
+
+### Definition of Done (Task 15)
+- [ ] `docs/DEPLOYMENT.md` has BitLocker + NTFS ACL section
+- [ ] `docs/DEPLOYMENT.md` has backup + restore runbook
+- [ ] Security review sign-off from `validator-quality` in `ai/evidence/decision-log.md`
+- [ ] `WORKSPACE_RULES.md` updated (SQLite approved for self-hosted IIS)
+- [ ] Smoke test: 5 rows confirmed in `audit.db` on test IIS
+- [ ] Phase 2 complete — no SQL Server dependency remains
+
+---
+
+## Phase 2 Common Issues & Solutions
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| `./data/` directory missing | `SqliteException: unable to open database` | `AuditDbStartupService` should create it; verify it runs on startup |
+| WAL files (`audit.db-wal`) left behind | Slow queries | Run `PRAGMA wal_checkpoint(TRUNCATE)` manually or let it auto-checkpoint |
+| EF Core migration `HasFilter` syntax error | Build error | Use double-quoted column names: `"\"Status\" != 'Success'"` |
+| `IDbContextFactory` scope issue | `ObjectDisposedException` in tests | Use `CreateDbContext()` not `CreateDbContextAsync()` in sync test setup |
+| CHECK constraint violation | `SqliteException: CHECK constraint failed` | Only values in ('Success','Failed','Pending','Cancelled') allowed for Status |
+| In-memory test DB not isolated | Test pollution between runs | Use a new `SqliteConnection("Data Source=:memory:")` per test class |
+| Backup fails while service running | File locked | Use `robocopy` (safe) not `copy` — robocopy handles WAL mode correctly |
 

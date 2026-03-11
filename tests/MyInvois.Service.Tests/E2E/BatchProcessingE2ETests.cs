@@ -1,40 +1,40 @@
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using Moq.Protected;
 using MyInvois.Service.Configuration;
+using MyInvois.Service.Data;
 using MyInvois.Service.DataAccess;
 using MyInvois.Service.Models;
 using MyInvois.Service.Services;
 using MyInvois.Service.Tests.Integration;
 using MyInvois.Service.Validators;
-using System.Data;
 using System.Net;
 using System.Text.Json;
 
 namespace MyInvois.Service.Tests.E2E;
 
 /// <summary>
-/// End-to-end batch processing tests
-/// Uses skills: All integration skills combined
+/// End-to-end batch processing tests.
+/// Uses skills: All integration skills combined.
 ///
 /// Tests the full invoice lifecycle:
 /// MOVEX Reader → Mapper → Validators → Submitter → AuditLogger
 ///
-/// These tests wire up all real components with mocked external dependencies
-/// (DB2, MyInvois API, SQL Server) to validate the complete processing pipeline.
+/// AuditLogger uses in-memory SQLite (ADR-014) — no SQL Server or mocked IDbConnection.
 /// </summary>
 [Trait("Category", "E2E")]
-public class BatchProcessingE2ETests
+public class BatchProcessingE2ETests : IDisposable
 {
     private readonly Mock<IInvoiceDataSource> _dataSourceMock;
     private readonly Mock<IPartyDataProvider> _partyProviderMock;
-    private readonly Mock<IDbConnection> _dbConnectionMock;
-    private readonly Mock<IDbCommand> _dbCommandMock;
-    private readonly Mock<IDataParameterCollection> _parametersMock;
     private readonly Mock<HttpMessageHandler> _httpHandlerMock;
+    private readonly SqliteConnection _keepAlive;
+    private readonly DbContextOptions<AuditDbContext> _auditOptions;
 
     private readonly InvoiceProcessor _processor;
 
@@ -42,20 +42,19 @@ public class BatchProcessingE2ETests
     {
         _dataSourceMock = new Mock<IInvoiceDataSource>();
         _partyProviderMock = new Mock<IPartyDataProvider>();
-        _dbConnectionMock = new Mock<IDbConnection>();
-        _dbCommandMock = new Mock<IDbCommand>();
-        _parametersMock = new Mock<IDataParameterCollection>();
         _httpHandlerMock = new Mock<HttpMessageHandler>();
 
-        // Wire up DB mocks
-        _dbCommandMock.Setup(c => c.Parameters).Returns(_parametersMock.Object);
-        _dbCommandMock.Setup(c => c.CreateParameter()).Returns(new Mock<IDbDataParameter>().Object);
-        _dbConnectionMock.Setup(c => c.CreateCommand()).Returns(_dbCommandMock.Object);
-        _dbConnectionMock.Setup(c => c.State).Returns(ConnectionState.Open);
-        _dbCommandMock.Setup(c => c.ExecuteNonQuery()).Returns(1);
-
-        // No duplicates by default
-        _dbCommandMock.Setup(c => c.ExecuteScalar()).Returns(0);
+        // Set up named shared in-memory SQLite audit database (ADR-014)
+        // Named + Cache=Shared: multiple connections share the same in-memory DB.
+        // _keepAlive holds it open so AuditLogger's using-disposal doesn't destroy it.
+        var connString = $"Data Source=audit_e2e_{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
+        _keepAlive = new SqliteConnection(connString);
+        _keepAlive.Open();
+        _auditOptions = new DbContextOptionsBuilder<AuditDbContext>()
+            .UseSqlite(connString)
+            .Options;
+        using var setupCtx = new AuditDbContext(_auditOptions);
+        setupCtx.Database.EnsureCreated();
 
         // Wire up HTTP mocks (OAuth + submission)
         SetupOAuthTokenResponse();
@@ -119,14 +118,19 @@ public class BatchProcessingE2ETests
             apiSettings,
             new Mock<ILogger<MyInvoiceSubmitter>>().Object);
 
+        // AuditLogger uses in-memory SQLite via factory (ADR-014)
         var auditLogger = new AuditLogger(
-            _dbConnectionMock.Object,
+            new E2ETestDbContextFactory(_auditOptions),
             new Mock<ILogger<AuditLogger>>().Object);
 
         _processor = new InvoiceProcessor(
             reader, mapper, submitter, auditLogger,
             new Mock<ILogger<InvoiceProcessor>>().Object);
     }
+
+    public void Dispose() => _keepAlive.Dispose();
+
+    private AuditDbContext NewCtx() => new(_auditOptions);
 
     [Fact]
     public async Task E2E_HappyPath_AllInvoicesSubmittedSuccessfully()
@@ -172,7 +176,6 @@ public class BatchProcessingE2ETests
         // Assert - all 3 processed, some may fail validation
         result.TotalInvoices.Should().Be(3);
         result.Submissions.Should().HaveCount(3);
-        // Valid invoices succeed, invalid fails
         result.SuccessCount.Should().BeGreaterThanOrEqualTo(1);
         (result.SuccessCount + result.FailedCount + result.SkippedCount).Should().Be(3);
     }
@@ -180,33 +183,34 @@ public class BatchProcessingE2ETests
     [Fact]
     public async Task E2E_DuplicateDetection_SkipsAlreadySubmitted()
     {
-        // Arrange
+        // Arrange — pre-insert a successful submission for the first invoice in SQLite
+        using (var ctx = NewCtx())
+        {
+            ctx.AuditLogs.Add(new AuditLogEntity
+            {
+                Action = "MyInvois_Submit", Category = "Integration", Severity = "Info",
+                ResourceType = "Invoice", ResourceId = "E2E-DUP-001",
+                Status = "Success", InvoiceNumber = "E2E-DUP-001"
+            });
+            await ctx.SaveChangesAsync();
+        }
+
         var records = new List<RawInvoiceRecord>
         {
-            CreateValidARRecord("E2E-DUP-001"),
-            CreateValidARRecord("E2E-DUP-002"),
+            CreateValidARRecord("E2E-DUP-001"), // already in DB → should be skipped
+            CreateValidARRecord("E2E-DUP-002"), // new → should be submitted
         };
 
         _dataSourceMock
             .Setup(ds => ds.GetInvoicesByDateRangeAsync(It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(records);
 
-        // First invoice is already submitted (duplicate)
-        var dupCheckCount = 0;
-        _dbCommandMock
-            .Setup(c => c.ExecuteScalar())
-            .Returns(() =>
-            {
-                dupCheckCount++;
-                return dupCheckCount == 1 ? 1 : 0; // First: duplicate, Second: new
-            });
-
         // Act
         var result = await _processor.ProcessMonthlyBatch();
 
         // Assert
         result.TotalInvoices.Should().Be(2);
-        result.SkippedCount.Should().Be(1, "first invoice was a duplicate");
+        result.SkippedCount.Should().Be(1, "first invoice was already submitted");
         result.SuccessCount.Should().Be(1, "second invoice was new and submitted");
     }
 
@@ -226,13 +230,16 @@ public class BatchProcessingE2ETests
         // Act
         var result = await _processor.ProcessMonthlyBatch();
 
-        // Assert - audit log insert was called
-        _dbCommandMock.Verify(c => c.ExecuteNonQuery(), Times.AtLeastOnce);
+        // Assert - audit row was created in SQLite
+        using var assertCtx = NewCtx();
+        var auditCount = await assertCtx.AuditLogs.CountAsync();
+        auditCount.Should().BeGreaterThanOrEqualTo(1, "at least one audit row per invoice processed");
 
-        // Verify the SQL command was set (INSERT INTO AuditLog)
-        _dbCommandMock.VerifySet(c => c.CommandText = It.Is<string>(
-            sql => sql.Contains("INSERT INTO") && sql.Contains("AuditLog")),
-            Times.AtLeastOnce);
+        var entry = await assertCtx.AuditLogs
+            .FirstOrDefaultAsync(x => x.InvoiceNumber == "E2E-AUDIT-001");
+        entry.Should().NotBeNull();
+        entry!.Action.Should().Be("MyInvois_Submit");
+        entry.Category.Should().Be("Integration");
     }
 
     [Fact]
@@ -252,7 +259,7 @@ public class BatchProcessingE2ETests
         result.FailedCount.Should().Be(0);
         result.CompletedAt.Should().NotBeNull();
 
-        // No submission or audit calls made
+        // No submission HTTP calls made
         _httpHandlerMock.Protected().Verify(
             "SendAsync",
             Times.Never(),
@@ -385,4 +392,15 @@ public class BatchProcessingE2ETests
     }
 
     #endregion
+}
+
+/// <summary>
+/// Test helper: creates a fresh AuditDbContext per call from shared options.
+/// AuditLogger disposes each context via 'using' — options stay alive.
+/// </summary>
+file sealed class E2ETestDbContextFactory : IDbContextFactory<AuditDbContext>
+{
+    private readonly DbContextOptions<AuditDbContext> _options;
+    public E2ETestDbContextFactory(DbContextOptions<AuditDbContext> options) => _options = options;
+    public AuditDbContext CreateDbContext() => new(_options);
 }

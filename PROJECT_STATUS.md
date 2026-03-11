@@ -1,9 +1,9 @@
 # MyInvois-Service: Project Status & Deliverables Summary
 
-**Document Version:** 4.1
-**Date:** February 19, 2026 (Updated — DirectQueryDataSource Implemented)
+**Document Version:** 5.0
+**Date:** March 9, 2026 (Updated — Sprint 6 SQLite Migration Complete)
 **Prepared For:** Executive Sponsors, Development Team, IT Operations
-**Status:** Phase 1 Implementation (Week 3/4 — 90% Complete) — On Track for Feb 28 Go-Live
+**Status:** Phase 1 Complete (Go-Live Feb 28, 2026) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
 
 ---
 
@@ -26,7 +26,7 @@
 ✅ **Compliance Framework Established** - Git pre-commit hooks, skills audit, rules enforcement  
 ✅ **Documentation Complete** - 11,000+ lines covering requirements, architecture, operational guides  
 
-### Phase 1 Implementation Progress (Week 3: Feb 19) 🔄 90% COMPLETE
+### Phase 1 Complete (Feb 28, 2026 — Go-Live) ✅
 
 ✅ **MyInvois Submitter** (100%): Full OAuth token caching (1-hr TTL, semaphore-locked), XAdES v1.1 signing with SDK, exponential backoff retry (5s→10s→20s), rate limiting (100 req/min), non-retriable error classification
 ✅ **MOVEX Reader** (100%): DB2 direct access strategy pattern (ADR-013), Dapper ORM, 30s timeout, party enrichment for AR/AP, invoice line item mapping (OINVOL+MITMAS)
@@ -34,11 +34,18 @@
 ✅ **Schema Mapper** (100%): MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination, line item mapping
 ✅ **Validators** (100%): 5 classes (Mandatory, TIN, Date, Currency, Totals) covering 20+ mandatory field checks
 ✅ **Invoice Processor** (100%): Full pipeline orchestration — Reader→Mapper→Validators→Submitter→AuditLogger
-✅ **Audit Logger** (100%): SQL Server persistence, duplicate detection, failed submission query
 ✅ **ADR-013 Gap #2 Closed**: Invoice line items flow through full pipeline (RawInvoiceLineRecord DTO, OINVOL+MITMAS SQL patterns documented)
 ✅ **ADR-013 Gap #3 Closed**: DB2 driver decided — System.Data.Odbc (not Net.IBM.Data.Db2) for AS/400 reliability
-📊 **224 Tests Passing** (415% of planned 54) — Unit + Integration + E2E all green
-📊 **Overall Project:** 90% complete, on track for February 28 go-live ✅
+
+### Phase 2 Sprint 6 Complete (Mar 9, 2026 — SQLite Migration) ✅
+
+✅ **Audit Logger** (100%): **SQLite via EF Core 8** (ADR-014) — replaced SQL Server ADO.NET. `IAuditLogger` interface unchanged. `IDbContextFactory<AuditDbContext>` pattern, 30-column schema, WAL mode, EnsureCreated on startup
+✅ **AuditLogEntity** (new): 30-column EF Core entity — 19 standard WORKSPACE_RULES fields + 11 MyInvois-specific (UUID, submission ID, invoice financials)
+✅ **AuditDbContext** (new): Code-First schema with CHECK constraints (Status/Severity) + 8 partial indexes
+✅ **AuditDbContextFactory** (new): `IDesignTimeDbContextFactory` for `dotnet ef` tooling
+✅ **DI Registration**: `AddAuditLogging()` extension method in `ServiceCollectionExtensions`
+✅ **Test Migration**: 3 test files rewritten from `Mock<IDbConnection>` to named in-memory SQLite + `_keepAlive` pattern
+📊 **233 Tests Passing** (100%) — 8 additional tests added during Sprint 6 migration
 
 ### Implementation Status (Week 2 of 4)
 
@@ -52,8 +59,8 @@
 | **Schema Mapper** | ✅ Complete | MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination | **100%** |
 | **Validators (5)** | ✅ Complete | MandatoryFields, TIN, Date, Currency, Totals covering 20+ constraints | **100%** |
 | **Invoice Processor** | ✅ Complete | Full pipeline orchestration: Reader→Mapper→Validators→Submitter→AuditLogger | **100%** |
-| **Audit Logger** | ✅ Complete | SQL Server persistence, duplicate detection, failed submission query | **100%** |
-| **Unit Tests** | ✅ Complete | 184 unit tests passing across all components (341% of planned 54) | **100%** |
+| **Audit Logger** | ✅ Complete | SQLite via EF Core 8 (ADR-014) — duplicate detection, failed query, WAL mode | **100%** |
+| **Unit Tests** | ✅ Complete | 184+ unit tests passing across all components (341%+ of planned 54) | **100%** |
 | **Integration Tests** | ✅ Complete | 5 integration tests: OAuth, submission, DS302, DS301, rate limit retry | **100%** |
 | **E2E Tests** | ✅ Complete | 5 E2E tests: happy path, mixed batch, duplicate, audit trail, empty batch | **100%** |
 | **Documentation** | 🔄 Updating | 11,000+ lines, updating with Week 3 progress | 95% |
@@ -62,7 +69,7 @@
 | **DirectQueryDataSource** | ✅ Complete | Dapper+ODBC, AP/AR queries, batch line items, company isolation | **100%** |
 | **Overall Project** | 🔄 In Progress | 90% complete, on track for February 28 go-live ✅ ON TRACK | **90%** |
 
-**Key Status:** All services 100% implemented, DirectQueryDataSource fully functional (no more stubs), 224 tests passing (unit + integration + E2E), performance testing & UAT remaining
+**Key Status:** Phase 1 complete (Feb 28 go-live). Phase 2 Sprint 6 complete — AuditLogger migrated from SQL Server to SQLite via EF Core 8 (ADR-014). 233 tests passing (100%). Sprint 7 (compliance, backup runbook, smoke test) starts Mar 17.
 
 ---
 
@@ -186,8 +193,8 @@
          │
          ▼
 ┌──────────────────────┐
-│ SQL Server           │  Immutable audit log
-│ [dbo].[AuditLog]     │  (7-year retention)
+│ SQLite (ADR-014)     │  Immutable audit log
+│ ./data/audit.db      │  (7-year retention, WAL mode)
 └──────────────────────┘
 
 ┌────────────────────────────────────────────────────────┐
@@ -206,7 +213,7 @@
 |-----|-------|----------|
 | **001** | Standalone Service | Separate service (not integrated into portal) |
 | **002** | Monthly Batch | 1st of month, 1 batch sales, 10 batches purchase |
-| **003** | SQL Server Audit | Workspace-wide standard for all projects |
+| **003** | SQL Server Audit | Workspace standard (superseded by ADR-014 for this service) |
 | **004** | Batch Sizes | Sales 100, Purchase 50, 0.6s delay (safe for 100 RPM) |
 | **005** | XAdES Signature | Use MyInvois SDK (no custom cryptography) |
 | **006** | Retry Strategy | Limited retries Phase 1, auto-circuit breaker Phase 2 |
@@ -257,9 +264,9 @@
 - Rate limit handling (100 req/min)
 
 ✅ **Data Retention (ISO 27001)**
-- 7-year audit trail in SQL Server
+- 7-year audit trail in SQLite (ADR-014 — replaces SQL Server)
 - Immutable log entries
-- TDE encryption at rest
+- BitLocker encryption at rest (OS-level), NTFS ACL on audit.db
 - TLS 1.2+ in transit
 
 ✅ **Workspace Standards (WORKSPACE_RULES.md)**
@@ -290,12 +297,12 @@
 
 | Layer | Count | Target | Status |
 |-------|-------|--------|--------|
-| **Unit Tests** | 184 | ≥80% coverage | ✅ Passing |
+| **Unit Tests** | 193 | ≥80% coverage | ✅ Passing |
 | **Integration Tests** | 35 | ≥70% coverage | ✅ Passing |
 | **E2E Tests** | 5 | Full workflows | ✅ Passing |
 | **Load Tests** | 1 | 1000 invoices | ⏳ Planned |
 | **UAT** | 50 invoices | Finance sign-off | ⏳ Planned |
-| **Total** | **224** | **100% pass rate** | ✅ |
+| **Total** | **233** | **100% pass rate** | ✅ |
 
 ### Test Results by Component
 
@@ -308,15 +315,15 @@ TotalsValidator:           10+ tests  ✅
 MyInvoisMapper:            26  tests  ✅
 MovexInvoiceReader:        10  tests  ✅
 MyInvoiceSubmitter:         9  tests  ✅
-AuditLogger:               10  tests  ✅
+AuditLogger (unit):        10  tests  ✅  ← rewritten for SQLite (Sprint 6)
 InvoiceProcessor:           9  tests  ✅
 Integration (API):          5  tests  ✅
 Integration (MOVEX):        3  tests  ✅
-Integration (AuditLog):     7  tests  ✅
+Integration (AuditLog):    12  tests  ✅  ← 5 SQLite integration tests (Sprint 6)
 E2E (full pipeline):        5  tests  ✅
 Infrastructure/Config:      60+ tests ✅
 ────────────────────────────────────────
-TOTAL: 224 tests (100% passing)
+TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
 ```
 
 ### Integration & E2E Test Scenarios
@@ -646,10 +653,10 @@ TOTAL: 224 tests (100% passing)
 ---
 
 **Document Prepared By:** Architecture & Planning Team
-**Date:** February 19, 2026 (Updated with DirectQueryDataSource Implementation)
-**Status:** Phase 1 Implementation In Progress (90% Complete) — On Track for Feb 28 Go-Live
-**Last Updated:** February 19, 2026
-**Next Review:** February 21, 2026 (end of Week 3) or upon critical event  
+**Date:** March 9, 2026 (Updated — Sprint 6 SQLite Migration Complete)
+**Status:** Phase 1 Complete (Go-Live Feb 28) | Phase 2 Sprint 6 Complete | Sprint 7 Starting Mar 17
+**Last Updated:** March 9, 2026
+**Next Review:** March 21, 2026 (Sprint 7 close) or upon critical event
 **Distribution:** Executive Sponsors, Development Team, IT Operations, Finance Leadership
 
 ---

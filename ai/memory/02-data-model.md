@@ -1,6 +1,6 @@
 # MyInvois-Service - Data Model & Database Schema
 
-**Last Updated**: 2026-02-27
+**Last Updated**: 2026-03-10
 **Status**: MVAI Iteration 1 (Active)
 **Version**: 1.1
 
@@ -211,6 +211,47 @@ CREATE NONCLUSTERED INDEX [IX_AuditLog_MyInvoisStatus]
 - **Tables**: `FPLEDG p` → LEFT JOIN `FGLEDG g` (GL ledger on voucher)
 - **Invoice number**: `EPSINO`
 - **Date field**: `EPACDT` (accounting date)
+
+#### Transaction Type Codes (AP/AR)
+
+To avoid accidental inclusion of non-invoice records (payments, adjustments, reversals), use transaction code filters explicitly.
+
+**FPLEDG `EPTRCD` (AP / supplier-side)**
+
+| Code | Meaning |
+|------|---------|
+| 10 | Supplier Invoice |
+| 11 | Credit Invoice |
+| 12 | Debit Adjustment |
+| 15 | Interest Invoice |
+| 20 | Supplier Payment |
+| 21 | On-account Payment |
+| 22 | Bank Payment |
+| 30 | Write-off |
+| 40 | Adjustment |
+| 50 | Exchange Rate Difference |
+| 90 | Reversal Transaction |
+
+**FSLEDG `ESTRCD` (AR / customer-side)**
+
+| Code | Meaning |
+|------|---------|
+| 10 | Customer Invoice |
+| 11 | Credit Invoice |
+| 12 | Debit Note |
+| 15 | Interest Invoice |
+| 20 | Customer Payment |
+| 21 | On-account Payment |
+| 22 | Bank Payment |
+| 30 | Write-off |
+| 40 | Adjustment |
+| 50 | Exchange Rate Difference |
+| 90 | Reversal Transaction |
+
+**Current service behavior (`DirectQueryDataSource`)**
+- AP currently does **not** filter by `p.eptrcd`; all posting codes returned by the query (invoices, payments, adjustments, reversals, etc.) are included.
+- AR extracts records via configurable `ArTransCode` (default `"10"`, customer invoice), which limits AR submissions to specific transaction codes.
+- Only the AR side is currently constrained by transaction code; excluding non-invoice transactions on the AP side would require enabling an additional `p.eptrcd = 10` filter in the service.
 
 ### Input Model: `MovexInvoice`
 

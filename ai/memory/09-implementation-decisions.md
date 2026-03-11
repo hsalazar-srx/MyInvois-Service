@@ -392,19 +392,70 @@ The original design (ADRs 001-012) assumed invoice data would be fetched via the
 
 ---
 
+## ADR-014: SQLite Audit Storage via EF Core
+
+**Date:** March 4, 2026
+**Status:** Accepted
+**Supersedes:** ADR-003 (SQL Server for Audit Logs) — for MyInvois-Service only
+
+### Context
+
+Post-go-live (Phase 2), the decision was made to remove the SQL Server runtime dependency from
+the MyInvois-Service audit logger. The service runs on IIS (on-premise), processes <500 invoice
+audit events/day, and SQL Server infrastructure adds operational overhead for this volume.
+
+### Decision
+
+**Replace `System.Data.SqlClient` + raw ADO.NET with `Microsoft.Data.Sqlite` + EF Core 8
+(Code-First). The `IAuditLogger` interface remains unchanged.**
+
+### Rationale
+
+- Zero runtime dependency: SQLite ships embedded in the NuGet package, no server install required
+- EF Core 8 provides first-class SQLite support with Code-First migrations
+- WAL mode supports concurrent reads during batch processing
+- In-memory SQLite (`Data Source=:memory:`) for integration tests — simpler than `Mock<IDbConnection>`
+- BitLocker on IIS server volume provides encryption-at-rest equivalent to SQL Server TDE
+
+### Alternatives Considered
+
+- ❌ **SQL Server LocalDB/Express**: Still requires SQL Server runtime; no infrastructure reduction
+- ❌ **LiteDB**: No EF Core provider; breaks LINQ query patterns
+- ❌ **JSONL flat file**: Not queryable; violates audit integrity requirements
+
+### Implementation Details
+
+- NuGet: `Microsoft.Data.Sqlite 8.0.*`, `Microsoft.EntityFrameworkCore.Sqlite 8.0.*`
+- New files: `src/Data/AuditLogEntity.cs`, `src/Data/AuditDbContext.cs`, `src/Data/AuditDbContextFactory.cs`
+- WAL mode: `PRAGMA journal_mode=WAL` via `Database.ExecuteSqlRaw` on `EnsureCreated` startup
+- File path convention: `Data Source=./data/audit.db` (relative to `AppContext.BaseDirectory`)
+- Type mappings: GUID → `TEXT`, `DateTime` → `TEXT` (ISO 8601)
+- Test pattern: `Data Source=:memory:` replaces `Mock<IDbConnection>` in integration tests
+
+### Consequences
+
+- ✅ SQL Server runtime dependency removed
+- ✅ `IAuditLogger` interface unchanged (zero consumer impact)
+- ✅ EF Core migrations provide schema version control
+- ⚠️ No TDE — BitLocker required on IIS server volume (see `docs/DEPLOYMENT.md`)
+- ⚠️ NTFS ACL on `./data/audit.db` required — App Pool identity only
+- ⚠️ Volume threshold: >500 events/day → SQL Server preferred (see `WORKSPACE_RULES.md`)
+
+---
+
 ## Future ADRs (Placeholder)
 
-### ADR-013: Cloud Migration Strategy (Phase 3)
+### ADR-015: Cloud Migration Strategy (Phase 3)
 - Evaluate Azure Functions vs AWS Lambda vs Kubernetes
-- Plan data migration (SQL Server → Azure SQL)
+- Plan data migration to Azure SQL Database
 - Design for scale (monthly → daily submission)
 
-### ADR-014: Real-Time Submission (If Required)
+### ADR-016: Real-Time Submission (If Required)
 - Switch from monthly batch to daily/hourly
 - Event-driven architecture (invoice created → immediately submit)
 - Webhook integration with MOVEX
 
-### ADR-015: Status Polling & Reconciliation
+### ADR-017: Status Polling & Reconciliation
 - Implement GET /documents/{uuid}/details polling
 - Match MyInvois status to MOVEX invoice lifecycle
 - Handle rejections, cancellations, amendments
@@ -417,7 +468,7 @@ The original design (ADRs 001-012) assumed invoice data would be fetched via the
 |-----|-------|------|--------|
 | 001 | Standalone Service vs Portal | 2026-02-05 | ✅ Accepted |
 | 002 | Monthly Batch Processing | 2026-02-05 | ✅ Accepted |
-| 003 | SQL Server for Audit Logs | 2026-02-05 | ✅ Accepted |
+| 003 | SQL Server for Audit Logs | 2026-02-05 | ✅ Accepted (superseded by ADR-014) |
 | 004 | Batch Sizes (100 sales, 50 purchase) | 2026-02-05 | ✅ Accepted |
 | 005 | XAdES via SDK | 2026-02-05 | ✅ Accepted |
 | 006 | Retry Strategy (Limited + Manual) | 2026-02-05 | ✅ Accepted |
@@ -428,11 +479,12 @@ The original design (ADRs 001-012) assumed invoice data would be fetched via the
 | 011 | Audit Retention (7 years) | 2026-02-05 | ✅ Accepted |
 | 012 | Phase 1 Scope (Core Only) | 2026-02-05 | ✅ Accepted |
 | 013 | Replace MOVEX REST API with DB2 Direct Access | 2026-02-16 | ✅ Accepted |
+| 014 | SQLite Audit Storage via EF Core | 2026-03-04 | ✅ Accepted |
 
 ---
 
-**Owner:** Development Team  
-**Review Date:** 2026-03-05 (post-MVAI learnings)  
+**Owner:** Development Team
+**Review Date:** 2026-03-09 (post-MVAI learnings + Phase 2 kickoff)
 **Contact:** Architecture Team
 
 ---
