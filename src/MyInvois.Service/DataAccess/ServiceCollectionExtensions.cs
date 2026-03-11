@@ -78,7 +78,7 @@ public static class ServiceCollectionExtensions
                 configuration.GetConnectionString("AuditLog")
                 ?? "Data Source=./data/audit.db"));
 
-        services.AddScoped<IAuditLogger, AuditLogger>();
+        services.AddTransient<IAuditLogger, AuditLogger>();
 
         return services;
     }

@@ -46,7 +46,7 @@ public class AuditLoggerTests : IDisposable
     public void Dispose() => _keepAlive.Dispose();
 
     // Helper — create a fresh context for assertions (safe to dispose independently)
-    private AuditDbContext Assert() => new(_options);
+    private AuditDbContext NewCtx() => new(_options);
 
     #region Constructor Tests
 

@@ -128,9 +128,10 @@ public class AuditLoggerIntegrationTests : IDisposable
         // Act
         var failedList = await _auditLogger.GetFailedSubmissions();
 
-        // Assert — all 3 returned
+        // Assert — all 3 returned, in descending order by timestamp
         failedList.Should().HaveCount(3);
         failedList.Should().OnlyContain(x => x.Status == "Failed");
+        failedList.Should().BeInDescendingOrder(x => x.Timestamp);
     }
 }
 
