@@ -51,7 +51,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
         var apWhere = "p.epacdt >= ? "; // AND p.eptrcd = 10";
-        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        //var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -101,7 +102,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND ESCHNO = 0 AND o.OKSTAT = ?");
+                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
@@ -137,7 +138,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
         var apWhere = "p.epacdt BETWEEN ? AND ?";// AND p.eptrcd = 10";
-        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -298,7 +299,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             ol.OILQA * ol.OILSA AS LineTotal,
             COALESCE(TRIM(ol.OILVTCD), '') AS TaxCode,
             COALESCE(ol.OILVTRT, 0) AS TaxRate,
-            COALESCE(ol.OILVTA, 0) AS TaxAmount
+            COALESCE(ol.ONVTAM, 0) AS TaxAmount
         FROM {schema}.OINVOL ol
         LEFT JOIN {schema}.MITMAS im ON ol.OILITNO = im.ITNO
         WHERE TRIM(ol.OIIVNO) IN ({placeholders})

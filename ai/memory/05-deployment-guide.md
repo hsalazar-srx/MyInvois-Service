@@ -538,15 +538,178 @@ WITH REPLACE;
 
 ---
 
+## Phase 11: MyInvois.Api Host (Invoice Extract)
+
+This section covers the IIS deployment of `MyInvois.Api` — the ASP.NET Core REST host that wraps
+`MyInvois.Service` and exposes a localhost-only HTTP endpoint consumed by SM-Portal.
+
+**Architecture:**
+```
+SM-Portal (IIS, port 5050)
+  → HTTP GET (X-API-Key)
+    → MyInvois.Api (IIS, port 5051, localhost-only)
+      → DB2/AS400 via ODBC
+```
+
+### 11.1 Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| .NET 8.0 Hosting Bundle | Install on the IIS host — separate from .NET SDK |
+| IBM DB2 iSeries Access ODBC driver | Required on the IIS host machine; download from IBM Fix Central |
+| IIS with ASP.NET Core Module v2 | Installed automatically by the .NET 8 Hosting Bundle |
+| App pool identity — AS/400 network access | The `ApplicationPoolIdentity` or a service account must be able to reach the AS/400 TCP port |
+| IIS WebSockets feature | WebSockets is **not** required; leave disabled (it is disabled by default) |
+
+### 11.2 User Secrets Setup
+
+Run the following commands **from `src/MyInvois.Api/`** (not from the SM-Portal directory or the
+solution root — user secrets are scoped to the `.csproj` `UserSecretsId`).
+
+```powershell
+cd c:\Projects\MyInvois-Service\src\MyInvois.Api
+
+dotnet user-secrets init
+
+dotnet user-secrets set "ApiKeys:Primary" "<generate-random-guid>"
+dotnet user-secrets set "ApiKeys:Admin"   "<generate-different-guid>"
+dotnet user-secrets set "MovexDb:ConnectionString" "DSN=AS400PROD;UID=...;PWD=...;"
+
+# Verify
+dotnet user-secrets list
+```
+
+**Expected output:**
+```
+ApiKeys:Primary = <guid>
+ApiKeys:Admin = <guid>
+MovexDb:ConnectionString = DSN=AS400PROD;UID=***;PWD=***;
+```
+
+> Note: `MovexDb:ConnectionString` must **only** exist in MyInvois.Api user-secrets.
+> Do **not** set this secret in SM-Portal — DB2 credentials must never be accessible to the portal process.
+
+### 11.3 Build and Publish
+
+```powershell
+# From the solution root
+cd c:\Projects\MyInvois-Service
+
+dotnet restore
+dotnet publish src/MyInvois.Api/MyInvois.Api.csproj -c Release -o ./publish/MyInvois.Api
+```
+
+**Expected output:**
+```
+Build succeeded.
+MyInvois.Api -> .\publish\MyInvois.Api\
+```
+
+### 11.4 IIS Setup
+
+#### 11.4.1 Create Application Pool
+
+| Setting | Value |
+|---|---|
+| Name | `MyInvoisApi` |
+| .NET CLR Version | No Managed Code |
+| Managed Pipeline Mode | Integrated |
+| Identity | ApplicationPoolIdentity (or a dedicated service account with AS/400 access) |
+
+```powershell
+# PowerShell (run as Administrator)
+Import-Module WebAdministration
+
+New-WebAppPool -Name "MyInvoisApi"
+Set-ItemProperty IIS:\AppPools\MyInvoisApi managedRuntimeVersion ""
+Set-ItemProperty IIS:\AppPools\MyInvoisApi processModel.identityType ApplicationPoolIdentity
+```
+
+#### 11.4.2 Create Website
+
+| Setting | Value |
+|---|---|
+| Site name | `MyInvois.Api` |
+| Physical path | `C:\inetpub\apps\MyInvois.Api` (copy publish output here) |
+| Binding | `http://localhost:5051` — **localhost-only, never bind to 0.0.0.0 or the server IP** |
+| Application pool | `MyInvoisApi` |
+
+```powershell
+# Copy publish output
+Copy-Item -Recurse -Force .\publish\MyInvois.Api\* C:\inetpub\apps\MyInvois.Api\
+
+# Create site
+New-Website -Name "MyInvois.Api" `
+            -PhysicalPath "C:\inetpub\apps\MyInvois.Api" `
+            -ApplicationPool "MyInvoisApi" `
+            -Port 5051 `
+            -IPAddress "127.0.0.1"
+```
+
+#### 11.4.3 Set ASPNETCORE_CONTENTROOT in web.config
+
+Per workspace standard, add the environment variable to the `<aspNetCore>` handler block in
+`C:\inetpub\apps\MyInvois.Api\web.config`:
+
+```xml
+<aspNetCore processPath="dotnet" arguments=".\MyInvois.Api.dll" stdoutLogEnabled="false">
+  <environmentVariables>
+    <environmentVariable name="ASPNETCORE_CONTENTROOT"
+                         value="C:\inetpub\apps\MyInvois.Api" />
+    <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+  </environmentVariables>
+</aspNetCore>
+```
+
+#### 11.4.4 Grant Folder Permissions
+
+```powershell
+# Grant read+execute to the app pool identity
+$acl = Get-Acl "C:\inetpub\apps\MyInvois.Api"
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    "IIS AppPool\MyInvoisApi", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+$acl.AddAccessRule($rule)
+Set-Acl "C:\inetpub\apps\MyInvois.Api" $acl
+```
+
+### 11.5 Smoke Test
+
+```powershell
+# Health check — no auth required
+curl -H "X-API-Key: <primary>" "http://localhost:5051/api/v1/health"
+# Expected: {"status":"healthy","timestamp":"2026-..."}
+
+# Invoice extract — requires X-API-Key
+curl -H "X-API-Key: <primary>" `
+     "http://localhost:5051/api/v1/invoices?fromDate=2025-01-01&toDate=2025-03-31&type=ALL"
+# Expected: {"invoices":[...],"totalCount":N}
+```
+
+If health returns 200 and invoices returns 200 (or 204 with an empty range), the service is
+operating correctly.
+
+### 11.6 Security Checklist
+
+- [ ] Port 5051 is bound to `127.0.0.1` only — confirm with `netstat -ano | findstr 5051`
+- [ ] Windows Firewall has no inbound rule for port 5051 (no external access needed)
+- [ ] `MovexDb:ConnectionString` is **not** present in SM-Portal user-secrets — DB2 credentials must reside only in `MyInvois.Api` user-secrets
+- [ ] `ApiKeys:Primary` and `ApiKeys:Admin` are random GUIDs — never reuse passwords from other systems
+- [ ] IIS site binding does **not** include the server IP or hostname — localhost only
+- [ ] `stdoutLogEnabled` is `false` in web.config (stdout can leak secrets to disk)
+- [ ] App pool identity service account (if not ApplicationPoolIdentity) has minimum required AS/400 permissions
+
+---
+
 ## 🔗 Related Documents
 
 - [00-Product Vision](00-product-vision.md) - Project objectives
 - [01-System Architecture](01-system-architecture.md) - System design
 - [04-API Integration](04-api-integration.md) - API specifications
+- [MyInvois.Api Runbook](../../docs/runbooks/myinvois-api-runbook.md) - Operational runbook for MyInvois.Api
 
 ---
 
-**Owner**: DevOps Team  
-**Last Review**: 2026-02-05  
-**Next Review**: 2026-02-28 (Post-Launch)
+**Owner**: DevOps Team
+**Last Review**: 2026-03-11
+**Next Review**: 2026-06-11
 

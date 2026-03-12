@@ -81,7 +81,7 @@ public class AuditLoggerTests : IDisposable
 
         await _sut.LogSubmission(result);
 
-        using var ctx = Assert();
+        using var ctx = NewCtx();
         var count = await ctx.AuditLogs.CountAsync();
         count.Should().Be(1);
     }
@@ -99,7 +99,7 @@ public class AuditLoggerTests : IDisposable
 
         await _sut.LogSubmission(result);
 
-        using var ctx = Assert();
+        using var ctx = NewCtx();
         var entry = await ctx.AuditLogs.SingleAsync();
         entry.Action.Should().Be("MyInvois_Submit");
         entry.Category.Should().Be("Integration");
@@ -125,7 +125,7 @@ public class AuditLoggerTests : IDisposable
 
         await _sut.LogSubmission(result);
 
-        using var ctx = Assert();
+        using var ctx = NewCtx();
         var entry = await ctx.AuditLogs.SingleAsync();
         entry.Status.Should().Be("Failed");
         entry.Severity.Should().Be("Error");
@@ -154,7 +154,7 @@ public class AuditLoggerTests : IDisposable
 
         await _sut.LogSubmission(result, document);
 
-        using var ctx = Assert();
+        using var ctx = NewCtx();
         var entry = await ctx.AuditLogs.SingleAsync();
         entry.TotalAmount.Should().Be(1060.00m);
         entry.TotalTax.Should().Be(60.00m);
@@ -170,7 +170,7 @@ public class AuditLoggerTests : IDisposable
     [Fact]
     public async Task IsInvoiceAlreadySubmitted_AfterSuccessfulSubmission_ReturnsTrue()
     {
-        using (var ctx = Assert())
+        using (var ctx = NewCtx())
         {
             ctx.AuditLogs.Add(new AuditLogEntity
             {
@@ -198,7 +198,7 @@ public class AuditLoggerTests : IDisposable
     public async Task IsInvoiceAlreadySubmitted_FailedSubmission_ReturnsFalse()
     {
         // A failed submission must NOT prevent re-submission
-        using (var ctx = Assert())
+        using (var ctx = NewCtx())
         {
             ctx.AuditLogs.Add(new AuditLogEntity
             {
@@ -230,7 +230,7 @@ public class AuditLoggerTests : IDisposable
     [Fact]
     public async Task GetFailedSubmissions_WithFailures_ReturnsMappedResults()
     {
-        using (var ctx = Assert())
+        using (var ctx = NewCtx())
         {
             ctx.AuditLogs.Add(new AuditLogEntity
             {
@@ -255,7 +255,7 @@ public class AuditLoggerTests : IDisposable
     [Fact]
     public async Task GetFailedSubmissions_RespectsMaxResults()
     {
-        using (var ctx = Assert())
+        using (var ctx = NewCtx())
         {
             for (int i = 1; i <= 5; i++)
             {
