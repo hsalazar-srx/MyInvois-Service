@@ -489,4 +489,59 @@ audit events/day, and SQL Server infrastructure adds operational overhead for th
 
 ---
 
+---
+
+## ADR-015: MyInvois.Api HTTP Host — Implements ADR-001 Portal Integration
+
+**Date:** 2026-03-11
+**Status:** Accepted
+
+### Context
+SM-Portal required invoice extract functionality (AP/AR list view) sourced from MOVEX DB2.
+ADR-001 (Feb 2026) mandated HTTP separation between portal and MyInvois-Service. An initial
+implementation attempt used a direct project reference, which was rejected after architectural
+review identified two blockers: (1) violation of ADR-001, (2) LHDN OAuth/XAdES credential
+surface would be loaded into SM-Portal's process alongside a user-facing Windows AD API.
+
+### Decision
+**Create `MyInvois.Api` — a dedicated ASP.NET Core Web API host project in this repository —
+and have SM-Portal call it via HTTP with an internal API key.**
+
+### Key Implementation Choices
+- **Two-tier API key auth** (`X-API-Key` primary / `X-Admin-Key` admin) with timing-safe
+  comparison (`CryptographicOperations.FixedTimeEquals`) — sourced from Reporting-Service pattern
+- **API versioning** — route prefix `/api/v1/` from day one to allow non-breaking future changes
+- **CorrelationId propagation** — SM-Portal forwards `X-Correlation-Id`; MyInvois.Api pushes it
+  into Serilog LogContext for end-to-end tracing
+- **Polly retry + circuit breaker** on SM-Portal's `HttpClient` (workspace rule compliance)
+- **`totalCount` in response envelope** — enables future server-side pagination without breaking
+  the contract
+- **`IInvoiceDataSource` used directly** (not `IMovexInvoiceReader`) — `RawInvoiceRecord` already
+  carries `CustomerName` (AR) and `PartyId` (AP); party enrichment deferred to a detail view
+
+### Deferred Items
+| Item | Condition to activate |
+|------|-----------------------|
+| Swagger/OpenAPI | When 2nd caller integrates |
+| Rate limiting (30 req/min) | When exposed beyond localhost |
+| Server-side pagination | When query exceeds 60s timeout |
+| Azure Functions compatibility | At Azure migration planning (ODBC constraint: see risk log) |
+
+### Consequences
+- ✅ ADR-001 implemented as designed
+- ✅ LHDN OAuth credentials isolated from SM-Portal
+- ✅ `MovexDb:ConnectionString` secret lives only in `MyInvois.Api` user-secrets
+- ✅ SM-Portal deployment decoupled from MyInvois data-layer changes
+- ✅ Architecture is compatible with future microservices evolution (replace API key → Azure AD
+  Managed Identity; replace ODBC → M3 MI REST API or ODBC proxy sidecar)
+- ⚠️ Second IIS site/app pool required on the Windows Server host (port 5051, localhost-only)
+
+### Files Created
+- `src/MyInvois.Api/MyInvois.Api.csproj`
+- `src/MyInvois.Api/Program.cs`
+- `src/MyInvois.Api/appsettings.json`
+- `src/MyInvois.Api/Middleware/ApiKeyMiddleware.cs`
+- `src/MyInvois.Api/Controllers/InvoicesController.cs`
+- `src/MyInvois.Api/Models/InvoiceModels.cs`
+
 **End of ADRs**
