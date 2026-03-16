@@ -2,7 +2,7 @@
 
 **Target Audience:** IT Operations  
 **Version:** 1.0-MVAI  
-**Status:** Pre-Production (Feb 28, 2026)
+**Status:** Pre-Production (Mar 31, 2026)
 
 ---
 
@@ -20,9 +20,10 @@
 - [ ] **Disaster Recovery**: Documented recovery procedure, test restore completed
 
 ### Database & Configuration
-- [ ] **Database**: SRX_AuditLog exists, TDE enabled
-- [ ] **Schema**: All tables and indexes created
-- [ ] **Backup**: Full backup scheduled (daily)
+- [ ] **Audit DB directory**: `C:\inetpub\wwwroot\MyInvois\data\` exists with NTFS ACL restricted to service account
+- [ ] **SQLite init**: `audit.db` created on first startup (EF Core `EnsureCreated`) — verify file present after first run
+- [ ] **WAL mode**: Confirmed enabled (check `PRAGMA journal_mode;` returns `wal`)
+- [ ] **Backup**: SQLite daily backup script scheduled (see Backup & Disaster Recovery section)
 - [ ] **Network**: Firewall rules allowing MOVEX DB2/AS400 (port 446/8471) & MyInvois API access
 - [ ] **Configuration**: All settings validated in production appsettings.json (CertificateSettings section populated)
 
@@ -79,8 +80,8 @@ $env:MOVEX_DB_CONNECTION = "Server=PROD_AS400;Database=PROD_DB;UserID=svc_myinvo
 $env:MYINVOIS_CLIENT_ID = "prod_client_id"
 $env:MYINVOIS_CLIENT_SECRET = "prod_client_secret"
 
-# Set SQL Server connection string
-$env:SQL_CONNECTION_STRING = "Server=PROD_SQL;Database=SRX_AuditLog;Integrated Security=true;TrustServerCertificate=true;"
+# Set SQLite audit log path (optional override — defaults to ./data/audit.db relative to app content root)
+$env:AUDITLOG_DB_PATH = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
 
 # Certificate password is retrieved from Windows Credential Manager (not environment variable)
 # It was stored during infrastructure setup: cmdkey /add:MyInvoisCert /user:admin /pass:*
@@ -90,7 +91,7 @@ Or update `appsettings.Production.json`:
 ```json
 {
   "ConnectionStrings": {
-    "AuditLog": "Server=PROD_SQL;Database=SRX_AuditLog;Integrated Security=true;TrustServerCertificate=true;"
+    "AuditLog": "Data Source=C:\\inetpub\\wwwroot\\MyInvois\\data\\audit.db"
   },
   "CertificateSettings": {
     "StoragePath": "C:\\Certs\\MyInvois\\myinvois-cert.pfx",
@@ -227,19 +228,21 @@ HTTP 200 OK
 ### 6. Verify Service Health
 
 ```powershell
-# Check audit table
-sqlcmd -S PROD_SQL -d SRX_AuditLog -Q "SELECT COUNT(*) FROM [dbo].[AuditLog];" -h -1 -W
+# Check audit table row count (SQLite)
+$auditDb = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
+$count = & sqlite3 "$auditDb" "SELECT COUNT(*) FROM AuditLogs;"
+Write-Host "Audit log row count: $count"
 ```
 
-**Expected:** Returns 0 (empty table ready for submissions)
+**Expected:** Returns `0` (empty table ready for submissions)
 
 ---
 
-## MVAI Go-Live Procedure (Feb 28, 2026)
+## MVAI Go-Live Procedure (Mar 31, 2026)
 
 ### Morning Briefing (8:00 AM)
 
-- [ ] Confirm all systems online (MOVEX DB2/AS400, MyInvois sandbox, SQL Server)
+- [ ] Confirm all systems online (MOVEX DB2/AS400, MyInvois sandbox, SQLite audit DB present)
 - [ ] Verify no pending issues from UAT
 - [ ] Distribute escalation contacts
 
@@ -260,24 +263,17 @@ dotnet MyInvois.Service.exe --process-monthly-batch --environment production
 ```
 
 **Monitor in real-time:**
-```sql
--- Check successful submissions
-SELECT TOP 20 [InvoiceNumber], [Status], [MyInvoisUUID], [Timestamp]
-FROM [dbo].[AuditLog]
-WHERE [Category] = 'MyInvois' AND [Action] = 'MyInvois_Submit'
-ORDER BY [Timestamp] DESC;
+```powershell
+$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
 
--- Check failed submissions
-SELECT [InvoiceNumber], [ErrorMessage], [RetryCount], [Timestamp]
-FROM [dbo].[AuditLog]
-WHERE [Category] = 'MyInvois' AND [Status] = 'Failed'
-ORDER BY [Timestamp] DESC;
+# Check recent successful submissions
+& sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisUuid, Timestamp FROM AuditLogs WHERE Category='MyInvois' AND Action='MyInvois_Submit' ORDER BY Timestamp DESC LIMIT 20;"
 
--- View summary
-SELECT [Status], COUNT(*) AS [Count]
-FROM [dbo].[AuditLog]
-WHERE [Category] = 'MyInvois' AND [Action] = 'MyInvois_Submit'
-GROUP BY [Status];
+# Check failed submissions
+& sqlite3 $db "SELECT InvoiceNumber, ErrorMessage, RetryCount, Timestamp FROM AuditLogs WHERE Category='MyInvois' AND Status='Failed' ORDER BY Timestamp DESC;"
+
+# View summary
+& sqlite3 $db "SELECT Status, COUNT(*) AS Count FROM AuditLogs WHERE Category='MyInvois' AND Action='MyInvois_Submit' GROUP BY Status;"
 ```
 
 **Success Criteria:**
@@ -289,15 +285,9 @@ GROUP BY [Status];
 ### Post-Live Monitoring (2-4 PM)
 
 Check every 30 minutes:
-```sql
-SELECT 
-    [Status], 
-    COUNT(*) AS [Count],
-    CAST(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS DECIMAL(5,2)) AS [Percentage]
-FROM [dbo].[AuditLog]
-WHERE [Category] = 'MyInvois' 
-  AND [Timestamp] > DATEADD(HOUR, -4, GETUTCDATE())
-GROUP BY [Status];
+```powershell
+$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
+& sqlite3 $db "SELECT Status, COUNT(*) AS Count, ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS Percentage FROM AuditLogs WHERE Category='MyInvois' AND Timestamp > datetime('now', '-4 hours') GROUP BY Status;"
 ```
 
 ### Sign-Off (5:00 PM)
@@ -322,8 +312,12 @@ Stop-Service -Name "MyInvois-Service" -Force
 ### Step 2: Revert to Pre-MVAI State
 
 ```powershell
-# Delete audit log (preserve backup)
-sqlcmd -S PROD_SQL -d SRX_AuditLog -Q "TRUNCATE TABLE [dbo].[AuditLog];"
+# Clear audit log entries from this session (preserve file, restore from backup if needed)
+$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
+& sqlite3 $db "DELETE FROM AuditLogs WHERE Timestamp > datetime('now', '-1 day');"
+
+# Or restore from yesterday's backup if full rollback needed
+# Copy-Item "\\backup-server\MyInvois\SQLiteAudit\{date}\audit_{date}.db" "$db" -Force
 
 # Restore previous version (if applicable)
 # Copy previous build to C:\Services\MyInvois-Service\
@@ -409,47 +403,50 @@ builder.Services.AddApplicationInsightsTelemetry();
 
 ### Manual Monitoring (Current)
 
-Set up recurring SQL Agent jobs:
+Check failed submissions hourly via Task Scheduler:
 
-```sql
--- Job: Check failed submissions (hourly)
-EXEC sp_add_job @job_name = 'MyInvois_FailureCheck';
-EXEC sp_add_jobstep @job_name = 'MyInvois_FailureCheck',
-    @command = 'sqlcmd -S ? -d SRX_AuditLog -Q "SELECT COUNT(*) FROM [dbo].[AuditLog] WHERE [Status] = ''Failed'' AND [Timestamp] > DATEADD(HOUR, -1, GETUTCDATE());"';
-EXEC sp_add_schedule @schedule_name = 'Hourly', @freq_type = 4, @freq_interval = 1;
-EXEC sp_attach_schedule @job_name = 'MyInvois_FailureCheck', @schedule_name = 'Hourly';
-```
-
-### Manual Monitoring (Current)
-
-Set up recurring SQL Agent jobs:
-
-```sql
--- Job: Check failed submissions (hourly)
-EXEC sp_add_job @job_name = 'MyInvois_FailureCheck';
-EXEC sp_add_jobstep @job_name = 'MyInvois_FailureCheck',
-    @command = 'sqlcmd -S ? -d SRX_AuditLog -Q "SELECT COUNT(*) FROM [dbo].[AuditLog] WHERE [Status] = ''Failed'' AND [Timestamp] > DATEADD(HOUR, -1, GETUTCDATE());"';
-EXEC sp_add_schedule @schedule_name = 'Hourly', @freq_type = 4, @freq_interval = 1;
-EXEC sp_attach_schedule @job_name = 'MyInvois_FailureCheck', @schedule_name = 'Hourly';
+```powershell
+# Job: Check failed submissions (hourly) — SQLite audit log
+$auditDb = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
+$query = "SELECT COUNT(*) FROM AuditLogs WHERE Status = 'Failed' AND Timestamp > datetime('now', '-1 hour');"
+$count = & sqlite3 "$auditDb" "$query"
+if ([int]$count -gt 0) {
+    Write-Warning "MyInvois: $count failed submissions in last hour — review audit.db"
+}
 ```
 
 ### Backup & Disaster Recovery
 
-#### Daily Audit Log Backup
+#### SQLite Audit Log Backup
+
+The audit database is a SQLite file (`audit.db`) at `C:\inetpub\wwwroot\MyInvois\data\audit.db`. Per ADR-030, this file must be included in the server's daily backup to satisfy the 7-year audit retention compliance requirement (ISO 27001, LHDN).
+
+**Files to back up:**
+- `audit.db` — primary database
+- `audit.db-wal` — WAL journal file (must be included or data loss may occur)
+- `audit.db-shm` — shared memory file (optional but recommended)
 
 ```powershell
-# Automated scheduled backup (daily at 22:00)
-Backup-SqlDatabase -ServerInstance "PROD_SQL" `
-  -Database "SRX_AuditLog" `
-  -BackupFile "\\backup-server\MyInvois\SRX_AuditLog_$(Get-Date -Format 'yyMMdd').bak" `
-  -CompressionOption On
+# SQLite Audit Log Backup — Daily at 22:30 (run after application window)
+$auditDbDir = "C:\inetpub\wwwroot\MyInvois\data"
+$backupDest = "\\backup-server\MyInvois\SQLiteAudit"
+$dateSuffix = Get-Date -Format 'yyMMdd'
 
-# Verify backup
-Restore-SqlDatabase -ServerInstance "PROD_SQL" `
-  -Database "SRX_AuditLog_Verify" `
-  -BackupFile "\\backup-server\MyInvois\SRX_AuditLog_$(Get-Date -Format 'yyMMdd').bak" `
-  -Replace
+New-Item -ItemType Directory -Force -Path "$backupDest\$dateSuffix" | Out-Null
+
+Copy-Item "$auditDbDir\audit.db"     "$backupDest\$dateSuffix\audit_$dateSuffix.db"
+Copy-Item "$auditDbDir\audit.db-wal" "$backupDest\$dateSuffix\audit_$dateSuffix.db-wal" -ErrorAction SilentlyContinue
+Copy-Item "$auditDbDir\audit.db-shm" "$backupDest\$dateSuffix\audit_$dateSuffix.db-shm" -ErrorAction SilentlyContinue
+
+Write-Host "SQLite audit backup complete: $backupDest\$dateSuffix"
 ```
+
+**Compliance requirements (ADR-030):**
+- [ ] `audit.db` stored on a server path included in the host server's backup policy
+- [ ] 7-year retention minimum (ISO 27001 + LHDN audit requirement)
+- [ ] Backup location is physically separate from application server
+- [ ] WAL journal file (`audit.db-wal`) included in every backup
+- [ ] Backup verified monthly by restoring to a test path and querying row count
 
 #### Certificate Backup (Encrypted)
 
@@ -532,8 +529,9 @@ Get-Content C:\Logs\MyInvois-Service\*.log -Tail 50
 # Manually trigger batch (testing)
 C:\Services\MyInvois-Service\MyInvois.Service.exe --process-batch --test
 
-# Retry failed invoices
-sqlcmd -S PROD_SQL -d SRX_AuditLog -i .\scripts\retry-failed-invoices.sql
+# Query audit log (SQLite)
+$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
+& sqlite3 $db "SELECT InvoiceNumber, Status, ErrorMessage FROM AuditLogs WHERE Status='Failed' ORDER BY Timestamp DESC LIMIT 20;"
 ```
 
 ---
@@ -542,11 +540,11 @@ sqlcmd -S PROD_SQL -d SRX_AuditLog -i .\scripts\retry-failed-invoices.sql
 
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common issues and fixes
 - [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) — Validation rules & traceability
-- [SQL query reference](./sql-queries.md) — Common audit log queries
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common audit log SQLite queries
 
 ---
 
-## Post-Go-Live (Week of Mar 3)
+## Post-Go-Live (Week of Apr 7)
 
 ### Phase 2 Planning
 
@@ -562,9 +560,9 @@ sqlcmd -S PROD_SQL -d SRX_AuditLog -i .\scripts\retry-failed-invoices.sql
 
 ---
 
-**Deployment Owner:** IT Ops  
-**Review Date:** February 21, 2026 (1 week before go-live)  
-**Next Update:** Post-MVAI lessons learned
+**Deployment Owner:** IT Ops
+**Review Date:** March 16, 2026 (Updated — SQLite backup added, monitoring script updated per ADR-030)
+**Next Update:** Post-MVAI lessons learned (after Mar 31 go-live)
 
 ---
 
