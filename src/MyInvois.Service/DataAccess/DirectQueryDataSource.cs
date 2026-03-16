@@ -50,8 +50,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
-        var apWhere = "p.epacdt >= ? "; // AND p.eptrcd = 10";
-        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 50 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";// AND p.eptrcd = 10";
+       //var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -101,7 +102,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND ESCHNO = 0 AND o.OKSTAT = ?");
+                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
@@ -136,8 +137,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
-        var apWhere = "p.epacdt BETWEEN ? AND ?";// AND p.eptrcd = 10";
-        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 50 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";// AND p.eptrcd = 10";
+        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -236,11 +237,12 @@ public class DirectQueryDataSource : IInvoiceDataSource
     }
 
     private static string BuildApHeaderSql(string schema, string whereClause) =>
-        $@"SELECT
+        $@"SELECT DISTINCT
             TRIM(p.epsuno) AS PartyId,
             TRIM(p.epsino) AS InvoiceNo,
             p.epacdt AS AccountingDate,
             TRIM(p.epvono) AS VoucherNumber,
+            p.epyea4 AS VoucherYear,
             TRIM(p.epcucd) AS Currency,
             p.eparat AS FxRate,
             p.epcuam AS InvoiceAmount,
@@ -248,10 +250,25 @@ public class DirectQueryDataSource : IInvoiceDataSource
             TRIM(g.egait1) AS GlCode
         FROM {schema}.fpledg p
         LEFT JOIN (
-            SELECT egvono, MIN(egait1) AS egait1
+            SELECT 
+                egcono,
+                egdivi,
+                egyea4,
+                egvono,
+                MIN(egait1) AS egait1
             FROM {schema}.fgledg
-            GROUP BY egvono
-        ) g ON p.epvono = g.egvono
+            WHERE TRIM(egait1) NOT IN ('769')   -- exclude rows with AP control account 769
+            GROUP BY 
+                egcono,
+                egdivi,
+                egyea4,
+                egvono
+        ) g ON p.epcono = g.egcono
+            AND p.epdivi = g.egdivi
+            AND p.epyea4 = g.egyea4
+            AND p.epvono = g.egvono
+        LEFT JOIN {schema}.cidmas s
+            ON p.epsuno = s.idsuno
         WHERE {whereClause}";
 
     private static string BuildArHeaderSql(string schema, string whereClause) =>
@@ -296,9 +313,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
             COALESCE(TRIM(ol.OILUN), 'EA') AS UnitOfMeasure,
             ol.OILSA AS UnitPrice,
             ol.OILQA * ol.OILSA AS LineTotal,
-            COALESCE(TRIM(ol.OILVTCD), '') AS TaxCode,
-            COALESCE(ol.OILVTRT, 0) AS TaxRate,
-            COALESCE(ol.OILVTA, 0) AS TaxAmount
+            --COALESCE(TRIM(ol.OILVTCD), '') AS TaxCode,
+            --COALESCE(ol.OILVTRT, 0) AS TaxRate,
+            COALESCE(ol.ONVTAM, 0) AS TaxAmount
         FROM {schema}.OINVOL ol
         LEFT JOIN {schema}.MITMAS im ON ol.OILITNO = im.ITNO
         WHERE TRIM(ol.OIIVNO) IN ({placeholders})

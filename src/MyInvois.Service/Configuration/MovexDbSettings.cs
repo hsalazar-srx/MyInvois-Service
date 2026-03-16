@@ -34,9 +34,12 @@ public class MovexDbSettings
     public string SchemaCmp300 { get; set; } = "mvxc300";
 
     /// <summary>
-    /// Active company codes to process (e.g., ["100", "300"])
+    /// Active company codes to process. Must be set entirely in configuration
+    /// (appsettings.json or user-secrets) — do NOT set a non-empty default here.
+    /// The .NET config binder appends to an existing List&lt;T&gt; rather than replacing it,
+    /// so a non-empty default causes config values to be duplicated at runtime.
     /// </summary>
-    public List<string> ActiveCompanyCodes { get; set; } = new() { "100", "300" };
+    public List<string> ActiveCompanyCodes { get; set; } = new();
 
     /// <summary>
     /// SQL command timeout in seconds
