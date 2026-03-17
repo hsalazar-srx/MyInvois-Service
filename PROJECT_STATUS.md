@@ -1,9 +1,9 @@
 # MyInvois-Service: Project Status & Deliverables Summary
 
 **Document Version:** 5.0
-**Date:** March 16, 2026 (Updated — Go-Live Extended to Mar 31 per ADR-016)
+**Date:** March 16, 2026 (Updated — Go-Live Extended to Mar 31, 2026)
 **Prepared For:** Executive Sponsors, Development Team, IT Operations
-**Status:** Phase 1 Active (Extended Go-Live 2026-03-31 per ADR-016) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
+**Status:** Phase 1 Active (Extended Go-Live 2026-03-31) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
 
 ---
 
@@ -12,7 +12,7 @@
 ### Project Overview
 
 **Objective:** Implement Malaysian e-invoicing integration for MOVEX ERP system via MyInvois government platform  
-**Timeline:** 4 weeks planned (Feb 3 - Feb 28, 2026); extended to 2026-03-31 per ADR-016
+**Timeline:** 4 weeks planned (Feb 3 - Feb 28, 2026); extended to 2026-03-31
 **Scope:** Standalone service for batch invoice submission with monthly scheduling  
 **Success Criteria:** ≥95% submission success rate, <5 seconds per invoice, 100% audit logging  
 
@@ -28,7 +28,7 @@
 
 ### Phase 1 Active (Extended Go-Live 2026-03-31) 🔄
 
-✅ **MyInvois Submitter** (100%): Full OAuth token caching (1-hr TTL, semaphore-locked), XAdES v1.1 signing with SDK (MyInvois SDK v1.5, integrated locally — not via NuGet), exponential backoff retry (5s→10s→20s), rate limiting (100 req/min), non-retriable error classification
+✅ **MyInvois Submitter** (in progress): OAuth token caching implemented (1-hr TTL, semaphore-locked), exponential backoff retry (5s→10s→20s), rate limiting (100 req/min), non-retriable error classification; UBL 2.1 serialization and XAdES v1.1 signing via MyInvois SDK v1.5 still TODO (placeholders in current submitter code; SDK not yet wired)
 ✅ **MOVEX Reader** (100%): DB2 direct access strategy pattern (ADR-013), Dapper ORM, 30s timeout, party enrichment for AR/AP, invoice line item mapping (OINVOL+MITMAS)
 ✅ **DirectQueryDataSource** (100%): Full Dapper+ODBC implementation — AP/AR header queries, batch line item fetching (OINVOL+MITMAS), dictionary-based company schema mapping, environment-isolated company querying via ActiveCompanyCodes
 ✅ **Schema Mapper** (100%): MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination, line item mapping

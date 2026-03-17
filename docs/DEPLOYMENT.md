@@ -80,8 +80,8 @@ $env:MOVEX_DB_CONNECTION = "Server=PROD_AS400;Database=PROD_DB;UserID=svc_myinvo
 $env:MYINVOIS_CLIENT_ID = "prod_client_id"
 $env:MYINVOIS_CLIENT_SECRET = "prod_client_secret"
 
-# Set SQLite audit log path (optional override — defaults to ./data/audit.db relative to app content root)
-$env:AUDITLOG_DB_PATH = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
+# Set SQLite audit log connection string (optional override — defaults to ./data/audit.db relative to app content root)
+$env:ConnectionStrings__AuditLog = "Data Source=C:\inetpub\wwwroot\MyInvois\data\audit.db"
 
 # Certificate password is retrieved from Windows Credential Manager (not environment variable)
 # It was stored during infrastructure setup: cmdkey /add:MyInvoisCert /user:admin /pass:*
@@ -267,13 +267,13 @@ dotnet MyInvois.Service.exe --process-monthly-batch --environment production
 $db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
 
 # Check recent successful submissions
-& sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisUuid, Timestamp FROM AuditLogs WHERE Category='MyInvois' AND Action='MyInvois_Submit' ORDER BY Timestamp DESC LIMIT 20;"
+& sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisUuid, Timestamp FROM AuditLogs WHERE Category='Integration' AND Action='MyInvois_Submit' ORDER BY Timestamp DESC LIMIT 20;"
 
 # Check failed submissions
-& sqlite3 $db "SELECT InvoiceNumber, ErrorMessage, RetryCount, Timestamp FROM AuditLogs WHERE Category='MyInvois' AND Status='Failed' ORDER BY Timestamp DESC;"
+& sqlite3 $db "SELECT InvoiceNumber, ErrorMessage, RetryCount, Timestamp FROM AuditLogs WHERE Category='Integration' AND Status='Failed' ORDER BY Timestamp DESC;"
 
 # View summary
-& sqlite3 $db "SELECT Status, COUNT(*) AS Count FROM AuditLogs WHERE Category='MyInvois' AND Action='MyInvois_Submit' GROUP BY Status;"
+& sqlite3 $db "SELECT Status, COUNT(*) AS Count FROM AuditLogs WHERE Category='Integration' AND Action='MyInvois_Submit' GROUP BY Status;"
 ```
 
 **Success Criteria:**
@@ -287,7 +287,7 @@ $db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
 Check every 30 minutes:
 ```powershell
 $db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-& sqlite3 $db "SELECT Status, COUNT(*) AS Count, ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS Percentage FROM AuditLogs WHERE Category='MyInvois' AND Timestamp > datetime('now', '-4 hours') GROUP BY Status;"
+& sqlite3 $db "SELECT Status, COUNT(*) AS Count, ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS Percentage FROM AuditLogs WHERE Category='MyInvois' AND datetime(Timestamp) > datetime('now', '-4 hours') GROUP BY Status;"
 ```
 
 ### Sign-Off (5:00 PM)
@@ -314,7 +314,7 @@ Stop-Service -Name "MyInvois-Service" -Force
 ```powershell
 # Clear audit log entries from this session (preserve file, restore from backup if needed)
 $db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-& sqlite3 $db "DELETE FROM AuditLogs WHERE Timestamp > datetime('now', '-1 day');"
+& sqlite3 $db "DELETE FROM AuditLogs WHERE datetime(Timestamp) > datetime('now', '-1 day');"
 
 # Or restore from yesterday's backup if full rollback needed
 # Copy-Item "\\backup-server\MyInvois\SQLiteAudit\{date}\audit_{date}.db" "$db" -Force
@@ -408,7 +408,7 @@ Check failed submissions hourly via Task Scheduler:
 ```powershell
 # Job: Check failed submissions (hourly) — SQLite audit log
 $auditDb = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-$query = "SELECT COUNT(*) FROM AuditLogs WHERE Status = 'Failed' AND Timestamp > datetime('now', '-1 hour');"
+$query = "SELECT COUNT(*) FROM AuditLogs WHERE Status = 'Failed' AND datetime(Timestamp) > datetime('now', '-1 hour');"
 $count = & sqlite3 "$auditDb" "$query"
 if ([int]$count -gt 0) {
     Write-Warning "MyInvois: $count failed submissions in last hour — review audit.db"
@@ -419,7 +419,7 @@ if ([int]$count -gt 0) {
 
 #### SQLite Audit Log Backup
 
-The audit database is a SQLite file (`audit.db`) at `C:\inetpub\wwwroot\MyInvois\data\audit.db`. Per ADR-030, this file must be included in the server's daily backup to satisfy the 7-year audit retention compliance requirement (ISO 27001, LHDN).
+The audit database is a SQLite file (`audit.db`) at `C:\inetpub\wwwroot\MyInvois\data\audit.db`. In line with the organisation's data retention and backup policy, this file must be included in the server's daily backup to satisfy the 7-year audit retention compliance requirement (ISO 27001, LHDN).
 
 **Files to back up:**
 - `audit.db` — primary database
@@ -434,9 +434,11 @@ $dateSuffix = Get-Date -Format 'yyMMdd'
 
 New-Item -ItemType Directory -Force -Path "$backupDest\$dateSuffix" | Out-Null
 
-Copy-Item "$auditDbDir\audit.db"     "$backupDest\$dateSuffix\audit_$dateSuffix.db"
-Copy-Item "$auditDbDir\audit.db-wal" "$backupDest\$dateSuffix\audit_$dateSuffix.db-wal" -ErrorAction SilentlyContinue
-Copy-Item "$auditDbDir\audit.db-shm" "$backupDest\$dateSuffix\audit_$dateSuffix.db-shm" -ErrorAction SilentlyContinue
+# Use SQLite online backup to ensure a consistent snapshot even if writes are in progress.
+# NOTE: Ensure sqlite3.exe is installed at the configured path and included in operational runbooks.
+$sqliteExe = "C:\Program Files\SQLite\sqlite3.exe"
+
+& $sqliteExe "$auditDbDir\audit.db" ".backup '$backupDest\$dateSuffix\audit_$dateSuffix.db'"
 
 Write-Host "SQLite audit backup complete: $backupDest\$dateSuffix"
 ```
@@ -540,7 +542,7 @@ $db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
 
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common issues and fixes
 - [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) — Validation rules & traceability
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common audit log SQLite queries
+- SQLite audit log query examples — see "Query audit log (SQLite)" in the Operational Verification section above
 
 ---
 

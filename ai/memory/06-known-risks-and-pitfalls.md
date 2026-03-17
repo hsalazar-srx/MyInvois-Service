@@ -135,14 +135,14 @@
 
 ### Risk [R009]: LHDN MyInvois SDK Breaking Changes
 - **Date Identified**: 2026-03-16
-- **Risk Description**: LHDN may release a new SDK version (e.g., v1.6+) that introduces breaking changes to the XAdES signature format, UBL field requirements, or API endpoints. The project targets SDK v1.5.
+- **Risk Description**: When the LHDN MyInvois SDK is integrated (planned target version v1.5), LHDN may release a new SDK version (e.g., v1.6+) that introduces breaking changes to the XAdES signature format, UBL field requirements, or API endpoints.
 - **Impact on Plant Operations**: Submissions rejected by MyInvois API; compliance gap until SDK is updated and redeployed
 - **Likelihood**: Medium (LHDN has updated SDK multiple times; v1.5 released 2026-01-01)
 - **Severity**: High (immediate compliance failure if submission API changes)
 - **Mitigation Strategy**:
   - Subscribe to LHDN developer portal release notifications
   - Monitor MyInvois SDK release notes monthly (first Monday of each month)
-  - Pin SDK version in .csproj; do not auto-upgrade without regression testing
+  - Plan to pin the SDK version in the relevant project file (e.g., `.csproj`) once the SDK package is added; do not auto-upgrade without regression testing
   - Assign an owner to review LHDN announcements and raise a change request if update needed
   - Reference: vault risk `api-breaking-changes-myinvois-sdk.md`
 - **Owner**: IT Manager + Development Lead
