@@ -393,8 +393,11 @@ $db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
 
 **Solutions:**
 1. **Expected**: MyInvois API correctly rejects true duplicates (DS302)
-2. The service has built-in duplicate detection via audit log check before submission
-3. Manual review required before any retry
+2. The service has built-in duplicate detection via audit log check before submission  
+   - This replaces the legacy SQL-based “skip list” mechanism; no manual SQL `INSERT` is required.
+3. After manual review, if the original submission was valid, treat the invoice as **skipped** by not requeuing or retrying it  
+   - Any subsequent attempt with the same `InvoiceNumber` will be rejected with DS302 by design.
+4. Only retry after correcting the invoice (e.g., new invoice number or corrected data), and document the action in your incident/ticket.
 
 ---
 

@@ -217,7 +217,7 @@ Reference: `c:/Projects/Knowledge-Management/vault/runbooks/iis-deployment.md` I
 
 **Backend:**
 - [ ] Controller `[Route(...)]` attributes do NOT repeat the IIS sub-app path prefix
-- [ ] Windows Auth: `AddNegotiate()` guarded by `APP_POOL_ID` detection (not called unconditionally)
+- [ ] Windows Auth: `AddNegotiate()` guarded by `APP_POOL_ID` detection (not called unconditionally) — see *IIS Deployment Runbook* (`vault/runbooks/iis-deployment.md`), “APP_POOL_ID guard pattern” for example implementation
 - [ ] All required secrets present in `appsettings.Production.json` (missing key → 502 at runtime)
 - [ ] App pool `managedRuntimeVersion` = `""` (No Managed Code)
 - [ ] App pool `loadUserProfile` = `true`

@@ -2,7 +2,7 @@
 
 **Version:** 0.1-DESIGN  
 **Status:** Phase 1 — Implementation In Progress (DB2 Direct Access per ADR-013)
-**Target Go-Live:** MVAI (March 31, 2026 — extended per ADR-016)
+**Target Go-Live:** MVAI (March 31, 2026 — extension reflects dependencies on MOVEX DB2 readiness, MyInvois API stability, and internal audit sign-off)
 **Architecture:** Hybrid (Standalone Service + MOVEX-Portal Integration)
 **Data Source:** MOVEX Database (IBM DB2/AS400) — Direct Access (ADR-013)
 
