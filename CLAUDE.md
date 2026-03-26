@@ -13,12 +13,18 @@
 - **@developer-dotnet** - .NET API implementation, service layer, clean architecture
 - **@architect-system-design** - ADR creation, design reviews, architecture decisions
 
+**Process Agents:**
+- **@validator-quality** - Security review, quality gates
+- **@documenter-technical** - ADRs, API docs
+- **@validator-iis-deploy** - IIS pre-deployment validation: route audit, secrets check, app pool config, smoke tests (skill: `cloud/dev-prod-parity` v1.0.0)
+
 **Collaboration Pattern:**
 1. **Compliance questions** → @expert-myinvois-compliance analyzes requirements
 2. **Architecture decisions** → @architect-system-design reviews impact, creates ADR if needed
 3. **Implementation** → @developer-dotnet coordinates with integration/compliance experts
 4. **Security review** → @validator-quality enforces quality gates
 5. **Documentation** → @documenter-technical updates ADRs and API docs
+6. **IIS deployment** → @validator-iis-deploy runs pre-deploy checklist before every UAT/production push
 
 **Workflows:**
 - **Compliance changes** → `C:\.github\governance\workflows\compliance-change.yaml`
@@ -165,6 +171,6 @@ Search `ai/memory/` → Check `decision-log.md` → Review `06-known-risks-and-p
 
 ---
 
-**Version:** 2.1
-**Last Updated:** 2026-02-27
-**Next Review:** 2026-03-01
+**Version:** 2.2
+**Last Updated:** 2026-03-19
+**Next Review:** 2026-04-01

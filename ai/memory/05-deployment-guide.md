@@ -1,6 +1,6 @@
 # MyInvois-Service - Deployment Guide
 
-**Last Updated**: 2026-02-05  
+**Last Updated**: 2026-03-18
 **Status**: MVAI Iteration 1 (Pre-Production)  
 **Version**: 1.0
 
@@ -17,13 +17,13 @@ Complete setup instructions for deploying MyInvois-Service in development, stagi
 ### Hardware Requirements
 - **OS**: Windows Server 2019+ or Windows 11
 - **Runtime**: .NET 8.0 Runtime (or SDK if developing)
-- **Database**: SQL Server 2019+ (Developer Edition acceptable for dev)
+- **Disk**: 2GB minimum (100MB/year estimated for SQLite audit log growth)
 - **Memory**: 2GB minimum (4GB recommended)
-- **Disk**: 2GB minimum (10GB recommended for SQL logs)
 
 ### Software Requirements
 - **Visual Studio 2022** or **Visual Studio Code**
-- **SQL Server Management Studio** (SSMS)
+- **IBM DB2 iSeries Access ODBC driver** (for MOVEX AS400 access)
+- **sqlite3.exe** (optional — for manual audit log inspection; download from sqlite.org or `winget install SQLite.SQLite`)
 - **Git** (for version control)
 
 ### Network Access
@@ -45,100 +45,20 @@ git clone https://github.com/YourOrg/MyInvois-Service.git
 cd MyInvois-Service
 ```
 
-### 2.2 Create SQL Server Database & Schema
+### 2.2 Audit Database Setup (Auto-Created)
 
-```sql
--- Create database
-CREATE DATABASE [SRX_AuditLog];
+The audit database is SQLite (`audit.db`) managed by EF Core 8 (ADR-014). The schema is **created automatically** on first startup via `EnsureCreated` + `PRAGMA journal_mode=WAL`. No manual SQL setup is required.
 
-USE [SRX_AuditLog];
-
--- Create dbo.AuditLog table
-CREATE TABLE [dbo].[AuditLog] (
-    [AuditLogID] [bigint] IDENTITY(1,1) NOT NULL PRIMARY KEY,
-    [Timestamp] [datetime2] NOT NULL DEFAULT GETUTCDATE(),
-    [InvoiceNumber] [nvarchar](50) NOT NULL,
-    [InvoiceType] [nvarchar](10),
-    [Action] [nvarchar](50) NOT NULL,  -- 'Fetched', 'Transformed', 'Submitted', 'Failed'
-    [Status] [nvarchar](50) NOT NULL,  -- 'Success', 'Pending', 'Failed'
-    [HttpStatusCode] [int],
-    [ErrorCode] [nvarchar](50),
-    [ErrorMessage] [nvarchar](max),
-    [MyInvoisUUID] [nvarchar](36),
-    [MyInvoisStatus] [nvarchar](50),
-    [SubmittedBy] [nvarchar](255),
-    [BatchID] [nvarchar](50),
-    [DurationMs] [int],
-    [RawRequest] [nvarchar](max),
-    [RawResponse] [nvarchar](max),
-    [AdditionalData] [nvarchar](max),
-    CONSTRAINT [CK_AuditLog_Status] CHECK ([Status] IN ('Success', 'Pending', 'Failed')),
-    CONSTRAINT [CK_AuditLog_Action] CHECK ([Action] IN ('Fetched', 'Transformed', 'Submitted', 'Failed'))
-);
-
--- Create indexes for performance
-CREATE NONCLUSTERED INDEX [IX_AuditLog_InvoiceNumber] 
-    ON [dbo].[AuditLog]([InvoiceNumber]);
-
-CREATE NONCLUSTERED INDEX [IX_AuditLog_Timestamp] 
-    ON [dbo].[AuditLog]([Timestamp]);
-
-CREATE NONCLUSTERED INDEX [IX_AuditLog_Status] 
-    ON [dbo].[AuditLog]([Status]);
-
-CREATE NONCLUSTERED INDEX [IX_AuditLog_MyInvoisUUID] 
-    ON [dbo].[AuditLog]([MyInvoisUUID]);
-
--- Create views for reporting
-CREATE VIEW [dbo].[vw_FailedSubmissions] AS
-SELECT 
-    [AuditLogID], [Timestamp], [InvoiceNumber], [ErrorCode], 
-    [ErrorMessage], [Status], [HttpStatusCode], [DurationMs]
-FROM [dbo].[AuditLog]
-WHERE [Action] = 'Submitted' AND [Status] = 'Failed';
-
-CREATE VIEW [dbo].[vw_MonthlySummary] AS
-SELECT 
-    YEAR([Timestamp]) AS [Year],
-    MONTH([Timestamp]) AS [Month],
-    COUNT(*) AS [TotalInvoices],
-    SUM(CASE WHEN [Status] = 'Success' THEN 1 ELSE 0 END) AS [SuccessCount],
-    SUM(CASE WHEN [Status] = 'Failed' THEN 1 ELSE 0 END) AS [FailedCount],
-    SUM(CASE WHEN [Status] = 'Pending' THEN 1 ELSE 0 END) AS [PendingCount],
-    AVG(CAST([DurationMs] AS FLOAT)) AS [AvgDurationMs]
-FROM [dbo].[AuditLog]
-WHERE [Action] = 'Submitted'
-GROUP BY YEAR([Timestamp]), MONTH([Timestamp]);
-
-CREATE VIEW [dbo].[vw_DuplicateSubmissions] AS
-SELECT 
-    [InvoiceNumber], COUNT(*) AS [SubmissionCount],
-    MIN([Timestamp]) AS [FirstSubmission],
-    MAX([Timestamp]) AS [LastSubmission]
-FROM [dbo].[AuditLog]
-WHERE [Action] = 'Submitted' AND [Status] = 'Success'
-GROUP BY [InvoiceNumber]
-HAVING COUNT(*) > 1;
-
--- Retention policy (7 years = 2555 days)
-CREATE PROCEDURE [dbo].[sp_PurgeOldAuditLogs]
-AS
-BEGIN
-    DECLARE @CutoffDate DATETIME2 = DATEADD(DAY, -2555, GETUTCDATE());
-    
-    DELETE FROM [dbo].[AuditLog]
-    WHERE [Timestamp] < @CutoffDate;
-    
-    DBCC SHRINKFILE (SRX_AuditLog_log, 0);
-END;
-```
-
-### 2.3 Verify SQL Setup
+### 2.3 Verify After First Run
 
 ```powershell
-# Open SQL Server Management Studio and connect
-# Execute test query
-SELECT COUNT(*) FROM [dbo].[AuditLog];
+$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"  # adjust path to your deploy location
+
+# Verify WAL mode
+& sqlite3 $db "PRAGMA journal_mode;"  # Expected: wal
+
+# Verify table exists and is empty
+& sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;"  # Expected: 0
 ```
 
 ---
@@ -158,7 +78,7 @@ SELECT COUNT(*) FROM [dbo].[AuditLog];
     }
   },
   "ConnectionStrings": {
-    "AuditLogDatabase": "Server=localhost;Database=SRX_AuditLog;Trusted_Connection=true;"
+    "AuditLog": "Data Source=./data/audit.db"
   },
   "MovexDb": {
     "ConnectionString": "DataSource=AS400SERVER;UserID=MOVEXUSER;Password=***;DefaultCollection=MOVEXDB;",
@@ -357,40 +277,28 @@ public async Task Run(
 
 ## Phase 6: Database Maintenance
 
-### 6.1 Enable Audit Log Retention Policy
+### 6.1 Audit Log Retention (7-Year Policy)
 
-```sql
--- Schedule weekly cleanup
-EXEC msdb.dbo.sp_add_job 
-    @job_name = 'MyInvois_AuditLog_Cleanup';
+SQLite does not have a scheduled job agent. Schedule a weekly Task Scheduler job to purge records older than 7 years (2555 days):
 
-EXEC msdb.dbo.sp_add_jobstep 
-    @job_name = 'MyInvois_AuditLog_Cleanup',
-    @step_name = 'Purge_Old_Records',
-    @command = 'EXEC [dbo].[sp_PurgeOldAuditLogs]';
-
-EXEC msdb.dbo.sp_add_schedule 
-    @schedule_name = 'Weekly_Sunday_Midnight',
-    @freq_type = 8,
-    @freq_interval = 1,
-    @active_start_time = 000000;
+```powershell
+# Weekly cleanup — run as Task Scheduler action
+$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+& sqlite3 $db "DELETE FROM AuditLogs WHERE datetime(Timestamp) < datetime('now', '-2555 days');"
+& sqlite3 $db "VACUUM;"  # Reclaim freed space
+Write-Host "Audit log retention cleanup complete: $(Get-Date)"
 ```
 
 ### 6.2 Monitor Disk Usage
 
-```sql
--- Check database size
-SELECT 
-    name,
-    size / 1024 / 1024 AS [Size_MB]
-FROM sys.database_files;
+```powershell
+$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
 
--- Check table growth
-SELECT 
-    OBJECT_NAME(ps.object_id) AS TableName,
-    ps.row_count,
-    (ps.reserved_page_count * 8) / 1024 AS [Reserved_MB]
-FROM sys.dm_db_partition_stats ps;
+# Check file size
+(Get-Item $db).Length / 1MB | ForEach-Object { "{0:N2} MB" -f $_ }
+
+# Check row count and approximate growth
+& sqlite3 $db "SELECT COUNT(*) AS TotalRows, MIN(Timestamp) AS OldestRecord, MAX(Timestamp) AS NewestRecord FROM AuditLogs;"
 ```
 
 ---
@@ -410,23 +318,20 @@ FROM sys.dm_db_partition_stats ps;
 
 ### 7.2 Audit Log Queries
 
-```sql
--- Last 10 submissions
-SELECT TOP 10 * FROM dbo.AuditLog 
-WHERE Action = 'Submitted' 
-ORDER BY Timestamp DESC;
+```powershell
+$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
 
--- Failed invoices this month
-SELECT * FROM dbo.vw_FailedSubmissions
-WHERE MONTH(Timestamp) = MONTH(GETDATE())
-  AND YEAR(Timestamp) = YEAR(GETDATE());
+# Last 10 submissions
+& sqlite3 $db "SELECT AuditId, InvoiceNumber, Status, Action, Timestamp FROM AuditLogs ORDER BY Timestamp DESC LIMIT 10;"
 
--- Monthly summary
-SELECT * FROM dbo.vw_MonthlySummary
-ORDER BY Year DESC, Month DESC;
+# Failed invoices this month
+& sqlite3 $db "SELECT InvoiceNumber, ErrorMessage, Timestamp FROM AuditLogs WHERE Status='Failed' AND strftime('%Y-%m', Timestamp) = strftime('%Y-%m', 'now') ORDER BY Timestamp DESC;"
 
--- Duplicate submissions
-SELECT * FROM dbo.vw_DuplicateSubmissions;
+# Monthly summary
+& sqlite3 $db "SELECT strftime('%Y-%m', Timestamp) AS Month, COUNT(*) AS Total, SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS Succeeded, SUM(CASE WHEN Status='Failed' THEN 1 ELSE 0 END) AS Failed FROM AuditLogs WHERE Action='MyInvois_Submit' GROUP BY Month ORDER BY Month DESC;"
+
+# Duplicate submissions (same invoice submitted more than once successfully)
+& sqlite3 $db "SELECT InvoiceNumber, COUNT(*) AS SubmissionCount, MIN(Timestamp) AS First, MAX(Timestamp) AS Last FROM AuditLogs WHERE Action='MyInvois_Submit' AND Status='Success' GROUP BY InvoiceNumber HAVING COUNT(*) > 1;"
 ```
 
 ### 7.3 Health Check Endpoint
@@ -454,15 +359,18 @@ public IActionResult Health()
 
 ### Service Won't Start
 - [ ] .NET 8.0 Runtime installed? `dotnet --version`
-- [ ] SQL Server running? `sqlcmd -S localhost`
+- [ ] `./data/` directory exists and is writable by the service account?
+- [ ] `audit.db` present? (Created on first run — check write permissions if missing)
 - [ ] User Secrets configured? `dotnet user-secrets list`
 - [ ] appsettings.json valid JSON? Use VS Code to validate
 - [ ] Check Windows Event Viewer for errors
 
-### Connection String Issues
-```sql
--- Test connection from application server
-SQLCMD -S srxdatabase -U appuser -P password -d SRX_AuditLog -Q "SELECT 1"
+### Audit DB Issues
+```powershell
+# Verify SQLite file is accessible
+$db = ".\data\audit.db"
+Test-Path $db
+& sqlite3 $db "PRAGMA integrity_check;"  # Expected: ok
 ```
 
 ### OAuth Token Fails
@@ -473,13 +381,10 @@ SQLCMD -S srxdatabase -U appuser -P password -d SRX_AuditLog -Q "SELECT 1"
 
 ### MyInvois Submission Fails
 
-```sql
--- Check recent errors
-SELECT TOP 20 
-    Timestamp, InvoiceNumber, ErrorCode, ErrorMessage, RawResponse
-FROM dbo.AuditLog
-WHERE Status = 'Failed'
-ORDER BY Timestamp DESC;
+```powershell
+# Check recent errors
+$db = ".\data\audit.db"
+& sqlite3 $db "SELECT Timestamp, InvoiceNumber, ErrorMessage, ResponsePayload FROM AuditLogs WHERE Status='Failed' ORDER BY Timestamp DESC LIMIT 20;"
 ```
 
 ### MOVEX DB2 Connection Timeout
@@ -511,29 +416,35 @@ Start-Service MyInvoisService
 dotnet user-secrets list
 ```
 
-### If Database Corruption
+### If Audit Database Corrupt
 
-```sql
--- Restore from backup
-RESTORE DATABASE [SRX_AuditLog] 
-FROM DISK = 'C:\Backups\SRX_AuditLog_2026-02-05.bak'
-WITH REPLACE;
+```powershell
+# Check integrity
+$db = ".\data\audit.db"
+& sqlite3 $db "PRAGMA integrity_check;"
+
+# If corrupt — restore from daily backup
+$backup = "\\backup-server\MyInvois\SQLiteAudit\{yyMMdd}\audit_{yyMMdd}.db"
+Copy-Item $backup $db -Force
+Write-Host "Restored audit.db from backup"
 ```
 
 ---
 
-## Phase 10: Go-Live Checklist (Feb 28, 2026)
+## Phase 10: Go-Live Checklist (Mar 31, 2026)
 
-- [ ] Production database created & backed up
+- [ ] `./data/` directory created on production server with correct NTFS ACL (service account write access)
+- [ ] `audit.db` created on first test run; WAL mode confirmed (`PRAGMA journal_mode;` = `wal`)
+- [ ] SQLite daily backup script scheduled (see DEPLOYMENT.md — 7-year retention per ADR-014)
 - [ ] OAuth credentials registered with MyInvois
-- [ ] DB2 AS/400 connection verified
+- [ ] DB2 AS/400 ODBC connection verified
 - [ ] Firewall rules configured (inbound/outbound)
-- [ ] User Secrets configured in production server
+- [ ] User Secrets configured on production server (MovexDb, API keys, certificate)
 - [ ] Scheduled job created (1st of month, 2:00 AM)
-- [ ] Audit log retention policy enabled
+- [ ] Certificate expiry monitoring enabled (daily at 06:00 AM)
 - [ ] Monitoring alerts configured
 - [ ] Documentation updated with production URLs
-- [ ] Team trained on monitoring dashboards
+- [ ] Team trained on SQLite audit log queries
 - [ ] Rollback plan tested and documented
 
 ---

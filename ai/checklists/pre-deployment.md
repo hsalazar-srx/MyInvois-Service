@@ -206,7 +206,35 @@ sqlcmd -S [server] -d SRX_AuditLog -Q "SELECT COUNT(*) FROM [dbo].[AuditLog]"
 
 ---
 
+---
+
+## IIS Deployment Parity (cloud/dev-prod-parity v1.0.0)
+
+Run `@validator-iis-deploy` before every UAT/production deployment to catch dev/prod gaps
+that are invisible in development (Kestrel) but break in IIS.
+
+Reference: `c:/Projects/Knowledge-Management/vault/runbooks/iis-deployment.md` Issues 1-7
+
+**Backend:**
+- [ ] Controller `[Route(...)]` attributes do NOT repeat the IIS sub-app path prefix
+- [ ] Windows Auth: `AddNegotiate()` guarded by `APP_POOL_ID` detection (not called unconditionally)
+- [ ] All required secrets present in `appsettings.Production.json` (missing key → 502 at runtime)
+- [ ] App pool `managedRuntimeVersion` = `""` (No Managed Code)
+- [ ] App pool `loadUserProfile` = `true`
+
+**Deployment process:**
+- [ ] Identify correct app pool: `appcmd.exe list app /site.name:"<SiteName>"`
+- [ ] Stop correct app pool before replacing DLL
+- [ ] Verify DLL timestamp after copy matches build output timestamp
+
+**Post-deploy smoke tests:**
+- [ ] `curl --negotiate -u : http://localhost/<app-path>/health` → 200
+- [ ] Auth endpoint returns 401 challenge then 200 (not 404) — 404 means route mismatch, not auth failure
+
+---
+
 **Related:**
 - [WORKSPACE_RULES.md](../../.github/WORKSPACE_RULES.md) - Full workspace standards
 - [Pre-Commit Checklist](pre-commit.md)
 - [Development Workflow](../workflows/development.md)
+- [IIS Deployment Runbook](../../../Knowledge-Management/vault/runbooks/iis-deployment.md)
