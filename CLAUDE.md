@@ -157,11 +157,24 @@ public class MovexInvoiceReader : IMovexInvoiceReader { }
 
 ---
 
+## Adaptive Learning
+
+**Before starting significant work**, check for prior lessons:
+1. Read `ai/memory/learnings.md` for accumulated project learnings
+2. Run `/cognee-query` with your specific question for deeper context
+3. For bug fixes: check if the broken behavior was an assumption in any ADR
+
+**After completing significant work**, capture what you learned:
+- Run `/capture-learning` to record pitfalls, patterns, quirks, or mistakes
+- This feeds the cognee knowledge graph so future sessions start with context
+
+---
+
 ## 🎯 Session Checklist
 
-**Start:** Read sprint-backlog → /plan for complex tasks
+**Start:** Read sprint-backlog → Read learnings.md → /plan for complex tasks
 **During:** Check skills → Write tests → /compact at 50%
-**End:** Tests pass → No credentials/PII → Commit → Push to feature branch (never master directly)
+**End:** Tests pass → No credentials/PII → /capture-learning if applicable → Commit → Push to feature branch (never master directly)
 
 ---
 
