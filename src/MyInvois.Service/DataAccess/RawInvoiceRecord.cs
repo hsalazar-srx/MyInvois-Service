@@ -67,6 +67,11 @@ public class RawInvoiceRecord
     public string CompanyCode { get; set; } = string.Empty;
 
     /// <summary>
+    /// Voucher/Invoice year — fpledg.epyea4 (AP). Needed for FGINLI/FGINAE join.
+    /// </summary>
+    public int VoucherYear { get; set; }
+
+    /// <summary>
     /// GL account code from fgledg.egait1 (joined via voucher number).
     /// AP only — AR queries do not join FGLEDG.
     /// </summary>
@@ -123,7 +128,8 @@ public class RawInvoiceRecord
     public string? PostCode { get; set; }
 
     /// <summary>
-    /// Invoice line items from OINVOL table (joined with MITMAS for classification).
+    /// Invoice line items. AR: from OINVOL (sales invoice lines).
+    /// AP: from FGINLI + MPLINE (purchase invoice lines).
     /// Populated by data source implementation when querying DB2.
     /// </summary>
     public List<RawInvoiceLineRecord> Lines { get; set; } = new();

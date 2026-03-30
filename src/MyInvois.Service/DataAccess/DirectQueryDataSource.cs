@@ -300,7 +300,10 @@ public class DirectQueryDataSource : IInvoiceDataSource
             ON a.OPCONO = f.ESCONO AND a.OPCUNO = f.ESCUNO AND a.OPADID = 'INV01'
         WHERE {whereClause}";
 
-    private static string BuildLineItemsSql(string schema, int batchSize)
+    /// <summary>
+    /// Build SQL for AR (sales) invoice line items from OINVOL + MITMAS.
+    /// </summary>
+    private static string BuildArLineItemsSql(string schema, int batchSize)
     {
         var placeholders = string.Join(",", Enumerable.Range(0, batchSize).Select(i => "?"));
         return $@"SELECT
@@ -322,7 +325,64 @@ public class DirectQueryDataSource : IInvoiceDataSource
         ORDER BY ol.OIIVNO, ol.OILVNO";
     }
 
+    /// <summary>
+    /// Build SQL for AP (purchase) invoice line items from FGINLI + MPLINE.
+    /// FGINLI provides line-level qty/price/net amount and VAT code.
+    /// MPLINE provides item number, description, and U/M via PO reference.
+    ///
+    /// Tax note: Scanfil APAC AP invoices have zero VAT (FPLEDG.EPVTAM = 0).
+    /// The FGINLI.F5VTCD field carries the M3 VAT code (e.g., "10") which maps
+    /// to LHDN tax type "06" (Not Applicable) in the MyInvois mapper layer.
+    /// FGINAE is not needed — it stores goods cost allocation, not separate VAT amounts.
+    /// </summary>
+    private static string BuildApLineItemsSql(string schema, int batchSize)
+    {
+        // Each AP invoice is identified by (SUNO, SINO, INYR) — 3 params per invoice
+        var valueTuples = string.Join(",", Enumerable.Range(0, batchSize).Select(i => $"(?, ?, ?)"));
+        return $@"SELECT
+            TRIM(li.F5SUNO) AS SupplierId,
+            TRIM(li.F5SINO) AS SupplierInvoiceNo,
+            li.F5INYR AS InvoiceYear,
+            ROW_NUMBER() OVER (
+                PARTITION BY li.F5SUNO, li.F5SINO, li.F5INYR
+                ORDER BY li.F5PUNO, li.F5PNLI
+            ) AS LineNumber,
+            TRIM(COALESCE(po.IBITNO, '')) AS ItemNumber,
+            TRIM(COALESCE(po.IBPITD, 'Purchase Line')) AS Description,
+            li.F5IVQT AS Quantity,
+            COALESCE(TRIM(po.IBPUUN), 'EA') AS UnitOfMeasure,
+            CASE WHEN li.F5IVQT <> 0
+                 THEN li.F5IVNA / li.F5IVQT
+                 ELSE li.F5IVOC
+            END AS UnitPrice,
+            li.F5IVNA AS LineTotal,
+            COALESCE(TRIM(li.F5VTCD), '') AS TaxCode,
+            0 AS TaxAmount
+        FROM {schema}.FGINLI li
+        LEFT JOIN {schema}.MPLINE po
+            ON li.F5CONO = po.IBCONO AND li.F5PUNO = po.IBPUNO AND li.F5PNLI = po.IBPNLI
+        WHERE li.F5CONO = ? AND li.F5DIVI = 'L'
+          AND (li.F5SUNO, li.F5SINO, li.F5INYR) IN (VALUES {valueTuples})
+        ORDER BY li.F5SUNO, li.F5SINO, li.F5PUNO, li.F5PNLI";
+    }
+
     private async Task FetchLineItemsAsync(
+        OdbcConnection connection, string schema, List<RawInvoiceRecord> headers, CancellationToken cancellationToken)
+    {
+        var arHeaders = headers.Where(h => h.InvoiceType == "AR").ToList();
+        var apHeaders = headers.Where(h => h.InvoiceType == "AP").ToList();
+
+        if (arHeaders.Count > 0)
+            await FetchArLineItemsAsync(connection, schema, arHeaders, cancellationToken);
+
+        if (apHeaders.Count > 0)
+            await FetchApLineItemsAsync(connection, schema, apHeaders, cancellationToken);
+    }
+
+    /// <summary>
+    /// Fetch AR (sales) invoice line items from OINVOL + MITMAS.
+    /// </summary>
+    private async Task FetchArLineItemsAsync(
         OdbcConnection connection, string schema, List<RawInvoiceRecord> headers, CancellationToken cancellationToken)
     {
         try
@@ -333,7 +393,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             for (var i = 0; i < invoiceNumbers.Count; i += batchSize)
             {
                 var batch = invoiceNumbers.Skip(i).Take(batchSize).ToList();
-                var sql = BuildLineItemsSql(schema, batch.Count);
+                var sql = BuildArLineItemsSql(schema, batch.Count);
 
                 var parameters = new DynamicParameters();
                 for (var j = 0; j < batch.Count; j++)
@@ -341,11 +401,10 @@ public class DirectQueryDataSource : IInvoiceDataSource
                     parameters.Add($"p{j}", batch[j]);
                 }
 
-                var lineItems = (await connection.QueryAsync<LineItemDto>(
+                var lineItems = (await connection.QueryAsync<ArLineItemDto>(
                     new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
                     .ToList();
 
-                // Group by invoice number and assign to headers
                 var grouped = lineItems.GroupBy(l => l.InvoiceNo);
                 foreach (var group in grouped)
                 {
@@ -359,16 +418,78 @@ public class DirectQueryDataSource : IInvoiceDataSource
         }
         catch (OdbcException ex)
         {
-            // Line items are optional — if the query fails, log and continue
-            _logger.LogWarning(ex, "Failed to fetch line items for schema {Schema}. " +
-                "Line items query may need schema adjustment. Continuing without line items.", schema);
+            _logger.LogWarning(ex, "Failed to fetch AR line items from OINVOL for schema {Schema}. " +
+                "Continuing without AR line items.", schema);
         }
     }
 
     /// <summary>
-    /// Internal DTO for line item query — includes InvoiceNo for grouping.
+    /// Fetch AP (purchase) invoice line items from FGINLI + MPLINE.
+    /// AP invoices are keyed by (SUNO, SINO, INYR) — unlike AR which uses a single invoice number.
     /// </summary>
-    private class LineItemDto
+    private async Task FetchApLineItemsAsync(
+        OdbcConnection connection, string schema, List<RawInvoiceRecord> headers, CancellationToken cancellationToken)
+    {
+        try
+        {
+            const int batchSize = 100;
+
+            // Build unique (SUNO, SINO, INYR) tuples for batching
+            var invoiceKeys = headers
+                .Select(h => (Supplier: h.PartyId, Invoice: h.InvoiceNo, Year: h.VoucherYear))
+                .Distinct()
+                .ToList();
+
+            for (var i = 0; i < invoiceKeys.Count; i += batchSize)
+            {
+                var batch = invoiceKeys.Skip(i).Take(batchSize).ToList();
+                var sql = BuildApLineItemsSql(schema, batch.Count);
+
+                var parameters = new DynamicParameters();
+                // First param is CONO
+                var companyCode = int.Parse(headers[0].CompanyCode);
+                parameters.Add("pCono", companyCode);
+
+                // Each invoice key = 3 positional params (SUNO, SINO, INYR)
+                var paramIndex = 0;
+                foreach (var key in batch)
+                {
+                    parameters.Add($"p{paramIndex++}", key.Supplier);
+                    parameters.Add($"p{paramIndex++}", key.Invoice);
+                    parameters.Add($"p{paramIndex++}", key.Year);
+                }
+
+                var lineItems = (await connection.QueryAsync<ApLineItemDto>(
+                    new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    .ToList();
+
+                // Group by supplier + invoice no and assign to matching headers
+                var grouped = lineItems.GroupBy(l => (l.SupplierId, l.SupplierInvoiceNo));
+                foreach (var group in grouped)
+                {
+                    var header = headers.FirstOrDefault(h =>
+                        h.PartyId == group.Key.SupplierId && h.InvoiceNo == group.Key.SupplierInvoiceNo);
+                    if (header != null)
+                    {
+                        header.Lines = group.Select(l => l.ToLineRecord()).ToList();
+                    }
+                }
+            }
+
+            _logger.LogInformation("Fetched AP line items for {Count} invoices from FGINLI in schema {Schema}",
+                invoiceKeys.Count, schema);
+        }
+        catch (OdbcException ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch AP line items from FGINLI for schema {Schema}. " +
+                "Continuing without AP line items.", schema);
+        }
+    }
+
+    /// <summary>
+    /// Internal DTO for AR line item query (OINVOL) — includes InvoiceNo for grouping.
+    /// </summary>
+    private class ArLineItemDto
     {
         public string InvoiceNo { get; set; } = string.Empty;
         public int LineNumber { get; set; }
@@ -395,6 +516,41 @@ public class DirectQueryDataSource : IInvoiceDataSource
             LineTotal = LineTotal,
             TaxCode = TaxCode,
             TaxRate = TaxRate,
+            TaxAmount = TaxAmount
+        };
+    }
+
+    /// <summary>
+    /// Internal DTO for AP line item query (FGINLI + MPLINE).
+    /// Uses composite key (SupplierId + SupplierInvoiceNo) for grouping.
+    /// </summary>
+    private class ApLineItemDto
+    {
+        public string SupplierId { get; set; } = string.Empty;
+        public string SupplierInvoiceNo { get; set; } = string.Empty;
+        public int InvoiceYear { get; set; }
+        public int LineNumber { get; set; }
+        public string ItemNumber { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public decimal Quantity { get; set; }
+        public string UnitOfMeasure { get; set; } = "EA";
+        public decimal UnitPrice { get; set; }
+        public decimal LineTotal { get; set; }
+        public string TaxCode { get; set; } = string.Empty;
+        public decimal TaxAmount { get; set; }
+
+        public RawInvoiceLineRecord ToLineRecord() => new()
+        {
+            LineNumber = LineNumber,
+            ItemNumber = ItemNumber,
+            Description = Description,
+            ClassificationCode = string.Empty, // LHDN classification assigned in mapper layer, not from M3
+            Quantity = Quantity,
+            UnitOfMeasure = UnitOfMeasure,
+            UnitPrice = UnitPrice,
+            LineTotal = LineTotal,
+            TaxCode = TaxCode,
+            TaxRate = 0, // AP invoices have zero VAT for Scanfil APAC
             TaxAmount = TaxAmount
         };
     }
