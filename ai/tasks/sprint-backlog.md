@@ -455,8 +455,9 @@ Target line:    ↘→↘→↘→↘→↘
 ---
 
 **Owner:** Developer, QA, Ops
-**Status:** Phase 1 Complete | Phase 2 Sprint 6 Complete ✅ | Sprint 7 Next (Mar 17-21)
-**Last Updated:** March 9, 2026
+**Status:** Phase 1 Active | Phase 2 Sprint 6 Complete ✅ | Sprint 7 Extended (Mar 17 – Apr 14) | Sprint 8 Planned (Apr 21-30)
+**Go-Live:** 2026-04-30 (deferred from Mar 31 — Finance team capacity unavailable for data validation/UAT)
+**Last Updated:** March 30, 2026
 
 ---
 
@@ -631,4 +632,46 @@ Day 5 (Fri):  3h →  0h  (6.8 review + merge)
 | Backup file ACL | Backup share restricted (not world-readable) | [ ] |
 
 **Record outcome in:** `ai/evidence/decision-log.md`
+
+---
+
+## Sprint 8: UAT & Go-Live (Apr 21-30, 2026)
+
+> **Created:** 2026-03-30 — Go-live deferred from Mar 31 to Apr 30 due to Finance team capacity constraints. E-invoicing is not a current Finance priority; data validation and UAT require Finance staff availability. See ADR-016 § Amendment 2026-03-30.
+
+### Work Items Summary
+
+| ID | Task | Story | Status | Assignee | Effort | Priority |
+|----|------|-------|--------|----------|--------|----------|
+| 8.1 | Finance UAT execution (50 real invoices, accuracy verification) | Go-Live | ⏳ Planned | Finance + QA | 16h | P0 |
+| 8.2 | Dry run in sandbox (full batch simulation, monitoring) | Go-Live | ⏳ Planned | Developer | 8h | P0 |
+| 8.3 | Production deployment (IIS, certificates, SQLite audit DB) | Go-Live | ⏳ Planned | Ops | 12h | P0 |
+| 8.4 | Go-live execution (Apr 30, 10:00 AM — first real batch) | Go-Live | ⏳ Planned | Team | 8h | P0 |
+| 8.5 | Post-go-live monitoring (Apr 30 – May 1) | Go-Live | ⏳ Planned | Ops | 16h | P1 |
+| **Total** | | | | | **60h** | |
+
+### Prerequisites (must be complete before Sprint 8 starts)
+
+- [ ] Sprint 7 deliverables complete (compliance docs, backup runbook, security review, smoke test)
+- [ ] AP invoice SQL fix merged and validated with real data
+- [ ] MyInvoiceMapper.Transform() implemented (MOVEX → UBL 2.1 field mapping)
+- [ ] XAdES signing integrated with MyInvois SDK v1.5
+- [ ] UBL 2.1 serialization integrated with MyInvois SDK v1.5
+- [ ] Finance team availability confirmed for Apr 21-25 UAT window
+
+### Sign-Off Requirements
+
+| Sign-Off | Owner | Required By |
+|----------|-------|-------------|
+| UAT Approval | Finance Manager | Apr 25 |
+| Infrastructure Approval | IT Manager | Apr 29 |
+| Go-Live Authority | Executive Sponsor | Apr 30 |
+
+### Known Risks Sprint 8
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| Finance team still unavailable in April | Go-live deferred again | Confirm Finance availability by Apr 7; escalate to executive sponsor if needed |
+| SDK integration incomplete | Cannot submit to LHDN | Complete SDK work during Sprint 7 extended period (Mar-Apr) |
+| AP SQL fix not validated | Purchase invoices excluded from go-live | Launch with sales invoices only; AP in follow-up batch |
 

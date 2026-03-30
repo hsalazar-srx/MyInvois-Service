@@ -2,7 +2,7 @@
 
 **Target Audience:** IT Operations  
 **Version:** 1.0-MVAI  
-**Status:** Pre-Production (Mar 31, 2026)
+**Status:** Pre-Production (Apr 30, 2026)
 
 ---
 
@@ -238,7 +238,7 @@ Write-Host "Audit log row count: $count"
 
 ---
 
-## MVAI Go-Live Procedure (Mar 31, 2026)
+## MVAI Go-Live Procedure (Apr 30, 2026)
 
 ### Morning Briefing (8:00 AM)
 
@@ -564,7 +564,7 @@ $db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
 
 **Deployment Owner:** IT Ops
 **Review Date:** March 16, 2026 (Updated — SQLite backup added, monitoring script updated per ADR-030)
-**Next Update:** Post-MVAI lessons learned (after Mar 31 go-live)
+**Next Update:** Post-MVAI lessons learned (after Apr 30 go-live)
 
 ---
 

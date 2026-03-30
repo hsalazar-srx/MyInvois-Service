@@ -2,7 +2,7 @@
 
 **Version:** 0.1-DESIGN  
 **Status:** Phase 1 — Implementation In Progress (DB2 Direct Access per ADR-013)
-**Target Go-Live:** MVAI (March 31, 2026 — extension reflects dependencies on MOVEX DB2 readiness, MyInvois API stability, and internal audit sign-off)
+**Target Go-Live:** MVAI (April 30, 2026 — second extension; Finance team capacity unavailable for data validation and UAT)
 **Architecture:** Hybrid (Standalone Service + MOVEX-Portal Integration)
 **Data Source:** MOVEX Database (IBM DB2/AS400) — Direct Access (ADR-013)
 
@@ -384,7 +384,7 @@ directly to the `appsettings.json` template already in the repo.
 ### Sprint 7 / UAT (Mar 17-30): Go-Live Readiness 🔄
 - 🔄 AP invoice SQL fix (Sprint 7 blocker)
 - 🔄 Compliance validation, backup runbook, smoke tests
-- 🔄 **MVAI go-live Mar 31** (extended per ADR-016)
+- 🔄 **MVAI go-live Apr 30** (extended per ADR-016 Amendment 2026-03-30)
 
 ---
 

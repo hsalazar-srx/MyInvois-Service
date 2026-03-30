@@ -431,7 +431,7 @@ Write-Host "Restored audit.db from backup"
 
 ---
 
-## Phase 10: Go-Live Checklist (Mar 31, 2026)
+## Phase 10: Go-Live Checklist (Apr 30, 2026)
 
 - [ ] `./data/` directory created on production server with correct NTFS ACL (service account write access)
 - [ ] `audit.db` created on first test run; WAL mode confirmed (`PRAGMA journal_mode;` = `wal`)

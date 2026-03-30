@@ -59,6 +59,7 @@ Use this file for **evidence** of decisions (approvals, meeting notes, impacts),
 | 2026-03-04 | Phase 2 kickoff: ADR-014 authored — SQLite replaces SQL Server for audit storage | architect-system-design | `ai/evidence/decision-001-sqlite-audit-storage.md` created | `IAuditLogger` interface unchanged; Sprint 6 implements code changes |
 | 2026-03-07 | Architecture Review sign-off: ADR-014 approved | IT Manager | `decision-001-sqlite-audit-storage.md` reviewed; clean architecture confirmed, security (BitLocker + NTFS ACL) documented | Sprint 6 code changes unblocked; WORKSPACE_RULES.md updated |
 | 2026-03-09 | Sprint 5 complete: all 5 Sprint 5 deliverables created/updated | Dev Team | decision-001, ADR-014, audit-logging.md, governance docs, decision-log all updated | Sprint 6 SQLite implementation starts March 10 |
+| 2026-03-30 | **Go-live deferred to 2026-04-30** — Finance team capacity unavailable for data validation and UAT; e-invoicing not a current Finance priority | Project Lead | ADR-016 § Amendment 2026-03-30 (second extension: Feb 28 → Mar 31 → Apr 30) | Sprint 7 extended; UAT rescheduled to Sprint 8 (Apr 21-30) |
 
 ---
 

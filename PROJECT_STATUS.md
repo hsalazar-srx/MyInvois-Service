@@ -1,9 +1,9 @@
 # MyInvois-Service: Project Status & Deliverables Summary
 
-**Document Version:** 5.0
-**Date:** March 16, 2026 (Updated — Go-Live Extended to Mar 31, 2026)
+**Document Version:** 6.0
+**Date:** March 30, 2026 (Updated — Go-Live Extended to Apr 30, 2026)
 **Prepared For:** Executive Sponsors, Development Team, IT Operations
-**Status:** Phase 1 Active (Extended Go-Live 2026-03-31) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
+**Status:** Phase 1 Active (Extended Go-Live 2026-04-30) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
 
 ---
 
@@ -12,7 +12,7 @@
 ### Project Overview
 
 **Objective:** Implement Malaysian e-invoicing integration for MOVEX ERP system via MyInvois government platform  
-**Timeline:** 4 weeks planned (Feb 3 - Feb 28, 2026); extended to 2026-03-31
+**Timeline:** 4 weeks planned (Feb 3 - Feb 28, 2026); extended to 2026-04-30
 **Scope:** Standalone service for batch invoice submission with monthly scheduling  
 **Success Criteria:** ≥95% submission success rate, <5 seconds per invoice, 100% audit logging  
 
@@ -26,7 +26,7 @@
 ✅ **Compliance Framework Established** - Git pre-commit hooks, skills audit, rules enforcement  
 ✅ **Documentation Complete** - 11,000+ lines covering requirements, architecture, operational guides  
 
-### Phase 1 Active (Extended Go-Live 2026-03-31) 🔄
+### Phase 1 Active (Extended Go-Live 2026-04-30) 🔄
 
 ✅ **MyInvois Submitter** (in progress): OAuth token caching implemented (1-hr TTL, semaphore-locked), exponential backoff retry (5s→10s→20s), rate limiting (100 req/min), non-retriable error classification; UBL 2.1 serialization and XAdES v1.1 signing via MyInvois SDK v1.5 still TODO (placeholders in current submitter code; SDK not yet wired)
 ✅ **MOVEX Reader** (100%): DB2 direct access strategy pattern (ADR-013), Dapper ORM, 30s timeout, party enrichment for AR/AP, invoice line item mapping (OINVOL+MITMAS)
@@ -67,9 +67,9 @@
 | **Performance Tests** | ⏳ Planned | Baseline metrics for <5s/invoice target | **0%** |
 | **UAT Preparation** | ⏳ Planned | Finance team test environment setup | **0%** |
 | **DirectQueryDataSource** | ✅ Complete | Dapper+ODBC, AP/AR queries, batch line items, company isolation | **100%** |
-| **Overall Project** | 🔄 In Progress | 90% complete, go-live extended to 2026-03-31 per ADR-016 ⚠️ PENDING | **90%** |
+| **Overall Project** | 🔄 In Progress | 90% complete, go-live extended to 2026-04-30 per ADR-016 Amendment 2026-03-30 | **90%** |
 
-**Key Status:** Phase 1 active — go-live extended to Mar 31 per ADR-016 amendment (2026-03-06). AP invoice SQL duplication issue identified Sprint 5 — fix in progress (Sprint 7 blocker, go-live checklist item). Phase 2 Sprint 6 complete — AuditLogger migrated from SQL Server to SQLite via EF Core 8 (ADR-014). 233 tests passing (100%). Sprint 7 (compliance, backup runbook, smoke test) starts Mar 17.
+**Key Status:** Phase 1 active — go-live extended to Apr 30 per ADR-016 Amendment 2026-03-30 (Finance team capacity unavailable for data validation/UAT). AP invoice SQL duplication issue identified Sprint 5 — fix in progress. Phase 2 Sprint 6 complete — AuditLogger migrated from SQL Server to SQLite via EF Core 8 (ADR-014). 233 tests passing (100%). Sprint 7 extended; Sprint 8 (UAT & Go-Live, Apr 21-30) planned.
 
 ---
 
@@ -242,7 +242,7 @@
 
 ### Rollback Plan
 
-**If critical issue found on go-live day (2026-03-31):**
+**If critical issue found on go-live day (2026-04-30):**
 1. Stop service (disable Task Scheduler)
 2. Restore audit database snapshot
 3. Manual invoice submission via MyInvois website (1-2 hours)
@@ -287,7 +287,7 @@
 | **E2E Tests** | 5 scenarios pass | Week 3 | QA |
 | **Performance** | <5s/invoice | Week 3 | Ops |
 | **UAT Sign-off** | Finance approval | Week 4 | Finance |
-| **Go-Live Authority** | Exec approval | Mar 31 | Executive |
+| **Go-Live Authority** | Exec approval | Apr 30 | Executive |
 
 ---
 
@@ -382,16 +382,16 @@ TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
 
 **Target:** Performance baseline established, UAT environment ready, all documentation current
 
-### Week 4: UAT & Go-Live (Mar 27-31) ⏳ PLANNED
+### Week 4: UAT & Go-Live (Apr 21-30) ⏳ PLANNED — Sprint 8
 
 **Critical Path Tasks:**
-- [ ] **Finance UAT** (Mar 27-29): 50 real invoices, accuracy verification, error handling demo (4-6 hours Finance time)
-- [ ] **Dry Run** (Mar 30): Full batch simulation, system monitoring, final validation
-- [ ] **Go-Live** (Mar 31, 10:00 AM) — extended per ADR-016: Production deployment, service activation, first real batch
-- [ ] **Monitoring** (Mar 31 - Apr 1): Real-time results review, alert handling
+- [ ] **Finance UAT** (Apr 21-25): 50 real invoices, accuracy verification, error handling demo (4-6 hours Finance time)
+- [ ] **Dry Run** (Apr 28): Full batch simulation, system monitoring, final validation
+- [ ] **Go-Live** (Apr 30, 10:00 AM) — extended per ADR-016 Amendment 2026-03-30: Production deployment, service activation, first real batch
+- [ ] **Monitoring** (Apr 30 - May 1): Real-time results review, alert handling
 - [ ] **Sign-Offs**: IT Manager (infrastructure), Finance Manager (UAT), Executive Sponsor (go-live)
 
-**Target:** ≥95% success rate on first batch, go-live complete by Mar 31, no critical incidents, team ready for Phase 2 planning
+**Target:** ≥95% success rate on first batch, go-live complete by Apr 30, no critical incidents, team ready for Phase 2 planning
 
 ---
 
@@ -524,7 +524,7 @@ TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
 
 ### Executive Summary for Leadership
 
-⚠️ **Project Status:** Go-Live Extended to Mar 31 per ADR-016 Amendment
+⚠️ **Project Status:** Go-Live Extended to Apr 30 per ADR-016 Amendment 2026-03-30
 ✅ **Risk Level:** Low (comprehensive planning completed)  
 ✅ **Budget:** Within allocation (no overruns identified)  
 ✅ **Timeline:** 4 weeks (3 weeks development + 1 week testing/go-live)  
@@ -544,11 +544,11 @@ TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
 ✅ **Timing:** Monthly submission (1st of month)  
 ✅ **Success Rate:** Target ≥95% (first submission)  
 ✅ **Error Handling:** Manual review for validation failures  
-✅ **Timeline:** Mar 31 go-live (extended from Feb 28 per ADR-016)
+✅ **Timeline:** Apr 30 go-live (extended from Feb 28 → Mar 31 → Apr 30 per ADR-016)
 
 **Finance Involvement:**
-- Week 4: UAT with 50 real invoices (Mar 27-29)
-- Mar 31: Go-live approval (extended per ADR-016)
+- Sprint 8: UAT with 50 real invoices (Apr 21-25)
+- Apr 30: Go-live approval (extended per ADR-016 Amendment 2026-03-30)
 - Ongoing: Monthly batch execution monitoring
 
 ### IT Operations Briefing
@@ -646,17 +646,17 @@ TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
 
 ### Go-Live Readiness: 🟢 ON TRACK
 
-**Target:** March 31, 2026 at 10:00 AM UTC (extended per ADR-016 amendment 2026-03-06)
-**Probability:** 95%+ (assuming no unexpected blockers)  
+**Target:** April 30, 2026 at 10:00 AM UTC (extended per ADR-016 Amendment 2026-03-30 — Finance capacity unavailable for validation/UAT)
+**Probability:** 90%+ (contingent on Finance team availability in April)
 **Contingency:** Rollback procedure documented, manual process available
 
 ---
 
 **Document Prepared By:** Architecture & Planning Team
-**Date:** March 16, 2026 (Updated — Go-Live Extended to Mar 31 per ADR-016)
-**Status:** Phase 1 Active (Extended Go-Live Mar 31) | Phase 2 Sprint 6 Complete | Sprint 7 Active
-**Last Updated:** March 16, 2026
-**Next Review:** March 21, 2026 (Sprint 7 close) or upon critical event
+**Date:** March 30, 2026 (Updated — Go-Live Extended to Apr 30 per ADR-016 Amendment 2026-03-30)
+**Status:** Phase 1 Active (Extended Go-Live Apr 30) | Phase 2 Sprint 6 Complete | Sprint 7 Extended | Sprint 8 Planned (Apr 21-30)
+**Last Updated:** March 30, 2026
+**Next Review:** April 14, 2026 (Sprint 7 close) or upon critical event
 **Distribution:** Executive Sponsors, Development Team, IT Operations, Finance Leadership
 
 ---
