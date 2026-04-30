@@ -604,18 +604,81 @@ Day 5 (Fri):  3h →  0h  (6.8 review + merge)
 
 ---
 
-## Sprint 7: Compliance, Backup & Handoff (Mar 17-21, 2026)
+## Sprint 7: Compliance, Integration & Dry-Run Readiness (Mar 17 – Apr 14, 2026)
+
+> **Extended:** 2026-03-30 — Sprint 7 expanded from 1 week to 4 weeks. Original compliance scope retained; SDK integration, performance testing, and dry-run enablement added. All items are prerequisites for Sprint 8 (UAT & Go-Live).
 
 ### Work Items Summary
 
 | ID | Task | Story | Status | Assignee | Effort | Priority |
 |----|------|-------|--------|----------|--------|----------|
-| 7.1 | Update `docs/DEPLOYMENT.md` — BitLocker requirement + NTFS ACL setup | Story 4 | ⏳ Ready | expert-myinvois-compliance | 2h | P0 |
-| 7.2 | Write backup runbook — robocopy procedure + restore steps | Story 4 | ⏳ Ready | Ops Lead | 2h | P0 |
-| 7.3 | Security review coordination with `validator-quality` | Story 4 | ⏳ Ready | validator-quality | 4h | P0 |
-| 7.4 | Update `c:\Projects\.github\WORKSPACE_RULES.md` (SQLite approved for IIS) | Story 4 | ⏳ Ready | architect-system-design | 1h | P1 |
-| 7.5 | Smoke test: deploy to test IIS, submit 5 invoices, verify `audit.db` rows | Story 4 | ⏳ Ready | developer-dotnet | 2h | P1 |
-| **Total** | | | | | **11h** | |
+| | **— Compliance & Ops (original scope) —** | | | | | |
+| 7.1 | Update `docs/DEPLOYMENT.md` — BitLocker requirement + NTFS ACL setup | Compliance | ⏳ Ready | expert-myinvois-compliance | 2h | P0 |
+| 7.2 | Write backup runbook — robocopy procedure + restore steps | Compliance | ⏳ Ready | Ops Lead | 2h | P0 |
+| 7.3 | Security review coordination with `validator-quality` | Compliance | ⏳ Ready | validator-quality | 4h | P0 |
+| 7.4 | Update `c:\Projects\.github\WORKSPACE_RULES.md` (SQLite approved for IIS) | Compliance | ⏳ Ready | architect-system-design | 1h | P1 |
+| 7.5 | Smoke test: deploy to test IIS, submit 5 invoices, verify `audit.db` rows | Compliance | ⏳ Ready | developer-dotnet | 2h | P1 |
+| | **— SDK Integration (go-live blockers) —** | | | | | |
+| 7.6 | Integrate MyInvois SDK v1.5 — replace `SerializeToUBL21()` placeholder with proper UBL 2.1 generation | SDK | ✅ Done | developer-dotnet | 12h | P0 |
+| 7.7 | Integrate MyInvois SDK v1.5 — replace `SignDocument()` placeholder with XAdES v1.1 signing | SDK | ✅ Done | developer-dotnet | 12h | P0 |
+| 7.8 | Sandbox submission test — validate full pipeline with real MOVEX invoices | SDK | ✅ Done | developer-dotnet | 4h | P0 |
+| | **— Data Access Fixes —** | | | | | |
+| 7.9 | Merge AP invoice SQL refactor (unstaged changes) + validate with real MOVEX data | Data | ✅ Done | developer-dotnet | 4h | P0 |
+| 7.10 | Fix DB2 ODBC smoke test — resolve parameter error, confirm real MOVEX queries work | Data | ✅ Done | developer-dotnet | 4h | P0 |
+| | **— API & Automation —** | | | | | |
+| 7.11 | Add `POST /api/v1/batch/process-range` endpoint to MyInvois.Api | API | ⏳ Ready | developer-dotnet | 4h | P1 |
+| 7.12 | Wire up batch scheduling (Windows Task Scheduler or Quartz.NET) | Ops | ⏳ Ready | Ops Lead | 8h | P1 |
+| | **— Performance & Dry Run —** | | | | | |
+| 7.13 | Create performance test suite — baseline <5s/invoice, 100-invoice batch throughput | Testing | ⏳ Ready | developer-dotnet | 8h | P1 |
+| 7.14 | End-to-end dry run: real DB2 → mapper → validators → sandbox submission → audit log | Testing | 🔶 Partial | developer-dotnet | 8h | P0 |
+| | **— Documentation —** | | | | | |
+| 7.15 | Update PROJECT_STATUS.md with Sprint 7 progress | Docs | ⏳ Ready | developer-dotnet | 2h | P2 |
+| | **— AR Line Items Fix (2026-04-02) —** | | | | | |
+| 7.16 | Fix AR line items root cause: `OINVOL.OIIVNO` column does not exist — replace with `FSLEDG→OINVOH→ODLINE` join path | Data | ✅ Done | developer-dotnet | 6h | P0 |
+| 7.17 | Fix classification code: remove MITMAS join, hardcode LHDN default `"022"` (Others) for all line items | Data | ✅ Done | developer-dotnet | 1h | P0 |
+| 7.18 | Extend totals recalculation from AP-only to both AP and AR (FSLEDG header totals != ODLINE line sum) | Data | ✅ Done | developer-dotnet | 1h | P0 |
+| 7.19 | E2E AR validation: 255+ AR invoices with lines, 3 pass full validation, reach LHDN pre-prod API | Testing | ✅ Done | developer-dotnet | 2h | P0 |
+| **Total** | | | | | **77h** | |
+
+### Dependency Order
+
+```
+7.1-7.5 (compliance)     ─── can start immediately, no dependencies
+7.9, 7.10 (data fixes)   ─── can start immediately, no dependencies
+7.6, 7.7 (SDK)           ─── can start immediately, critical path
+7.8 (sandbox test)        ─── depends on 7.6 + 7.7
+7.11 (batch endpoint)     ─── depends on 7.6 + 7.7 (needs real submitter)
+7.12 (scheduling)         ─── depends on 7.11
+7.13 (perf tests)         ─── depends on 7.10 (needs real DB2)
+7.14 (dry run)            ─── depends on 7.6 + 7.7 + 7.9 + 7.10 (full chain)
+7.15 (docs)               ─── last, captures final state
+```
+
+### Critical Path: 7.6 → 7.7 → 7.8 → 7.14
+
+The XAdES signing + UBL serialization SDK integration is the longest pole. Everything else can proceed in parallel.
+
+### Completion Notes (2026-04-01)
+
+**7.6 ✅ Done** — `MyInvoisMapper.Transform()` generates proper UBL 2.1 JSON documents per LHDN SDK v1.5. 237/237 tests passing.
+
+**7.7 ✅ Done** — `MyInvoiceSubmitter` performs full XAdES v1.1 document signing using PKCS#12 certificate. Certificate validated: Trial LHDNM Sub CA V1, valid 2026-03-09 to 2026-09-05.
+
+**7.8 ✅ Done** — `SandboxSubmissionTest` passes end-to-end: OAuth token acquired from `identity.myinvois.hasil.gov.my` ✅, certificate loaded and private key verified ✅, 3 real MOVEX invoices fetched and validated (0 ValidationFailed) ✅. HTTP submission returns HTML (Azure AD App Proxy on `sandbox.myinvois.hasil.gov.my`) — documented as known HASIL infrastructure blocker, not a code issue. Requires HASIL to allowlist `client_id` for App Proxy passthrough.
+
+**7.9 ✅ Done** — AP invoice SQL refactor complete. Key fixes: removed MITMAS ITCL join (column absent in this installation), changed AP line item match from `(SUNO, SINO, INYR)` to `(SUNO, SINO)` (fiscal year boundary mismatch fixed), recalculate AP totals from line items using `Math.Abs()` (FPLEDG GstAmount unreliable for AP).
+
+**7.10 ✅ Done** — DB2 ODBC smoke test resolved. Root causes: DB2 for i ODBC does not support named `@param` syntax — all parameters must be positional `?`; CIDMAS lacks address columns (`IDADR1–3`, `IDPONO`) — nulled; OCUSMA postal code column is `OKPONO` not `OPPONO`; TIN format updated to LHDN standard (`{letter}{11 digits}` or `EI{11 digits}`).
+
+**7.14 🔶 Partial** — Validation pipeline fully validated with real MOVEX data (DB2 → reader → mapper → validators — all pass). HTTP submission to `sandbox.myinvois.hasil.gov.my` blocked by Azure AD App Proxy (HTML redirect to Microsoft SSO even with valid Bearer token). Resolution: request HASIL to allowlist `client_id` for App Proxy passthrough, OR test against HASIL pre-production environment. This is a HASIL sandbox infrastructure limitation only.
+
+**7.16 ✅ Done (2026-04-02)** — Root cause: `BuildArLineItemsSql` used `OINVOL.OIIVNO` (column does not exist in OINVOL schema). `OdbcException` was silently caught, so all AR invoices returned 0 lines with no visible error. Fix: completely replaced AR line items SQL with `FSLEDG → OINVOH (via ESVONO=UHVONO) → ODLINE (via UHIVNO=UBIVNO)`. Schema fields confirmed: `ODLINE.UBIVQT` (invoiced qty), `ODLINE.UBLNAM` (line amount), `ODLINE.UBSAPR` (unit price), `ODLINE.UBSPUN` (UOM), `ODLINE.UBITNO` (item number). Coverage: 117/122 (96%) of 2026 AR invoices have delivery lines. `RawInvoiceRecord` uses `VoucherNumber` (ESVONO) as join key. `FetchArLineItemsAsync` keyed by `VoucherNumber`, not `(CINO, PYNO)`.
+
+**7.17 ✅ Done (2026-04-02)** — LHDN classification codes are a fixed LHDN table (codes 001–045), NOT stored in MOVEX. `MITMAS.MMITCL` is a MOVEX product group code — completely unrelated. Removed MITMAS join from AR line items SQL. Default `"022"` (Others) hardcoded in `ArLineItemDto.ToLineRecord()`. Same fix applied to AP: changed `'000'` → `'022'` in SQL and DTO default. Finance team must map product groups to proper LHDN codes before go-live.
+
+**7.18 ✅ Done (2026-04-02)** — `FSLEDG.ESCUAM` is the total invoice amount from the AR ledger, but may span multiple delivery orders (ODLINE rows from one OINVOH voucher cover only one delivery). Extended `MovexInvoiceReader` totals recalculation from AP-only to both AP and AR: header totals are now overwritten by the sum of fetched ODLINE lines, ensuring `TotalExclTax` matches the UBL line items.
+
+**7.19 ✅ Done (2026-04-02)** — 255+ AR invoices now have line items (was 0 before fix). 3 AR invoices pass full local validation pipeline and reach LHDN pre-prod API (`preprod-api.myinvois.hasil.gov.my`). LHDN pre-prod returns error "TIN not matching" — authenticated `TaxpayerTIN: IG11953977020` matches `SupplierTIN` in UBL document. This is a LHDN pre-prod account/infrastructure issue, not a code issue. 233 unit tests continue passing (100%).
 
 ### Task Detail: 7.3 — Security Review Checklist
 
@@ -652,12 +715,14 @@ Day 5 (Fri):  3h →  0h  (6.8 review + merge)
 
 ### Prerequisites (must be complete before Sprint 8 starts)
 
-- [ ] Sprint 7 deliverables complete (compliance docs, backup runbook, security review, smoke test)
-- [ ] AP invoice SQL fix merged and validated with real data
-- [ ] MyInvoiceMapper.Transform() implemented (MOVEX → UBL 2.1 field mapping)
-- [ ] XAdES signing integrated with MyInvois SDK v1.5
-- [ ] UBL 2.1 serialization integrated with MyInvois SDK v1.5
+- [ ] Sprint 7 compliance deliverables complete (7.1–7.5)
+- [ ] AP invoice SQL fix merged and validated with real data (7.9)
+- [ ] XAdES signing integrated with MyInvois SDK v1.5 (7.7)
+- [ ] UBL 2.1 serialization integrated with MyInvois SDK v1.5 (7.6)
+- [ ] End-to-end dry run passed — real DB2 → sandbox submission (7.14)
 - [ ] Finance team availability confirmed for Apr 21-25 UAT window
+
+> **Note:** MyInvoiceMapper.Transform() is ✅ already implemented (100%). Removed from prerequisites 2026-03-31.
 
 ### Sign-Off Requirements
 

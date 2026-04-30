@@ -89,7 +89,7 @@ public class BatchProcessingE2ETests : IDisposable
             {
                 ["100"] = new()
                 {
-                    TIN = "000000000000",
+                    TIN = "C20921865070",
                     Name = "SRX Engineering Sdn Bhd",
                     BRN = "202301012345",
                     IdScheme = "BRN",
@@ -329,7 +329,7 @@ public class BatchProcessingE2ETests : IDisposable
             .ReturnsAsync(new PartyDetails
             {
                 PartyId = "CUS-001",
-                TIN = "999999999999",
+                TIN = "C99999999999",
                 Name = "Test Customer Sdn Bhd",
                 BRN = "BRN-CUS-001",
                 Address = "456 Jalan Test, KL",
@@ -342,7 +342,7 @@ public class BatchProcessingE2ETests : IDisposable
             .ReturnsAsync(new PartyDetails
             {
                 PartyId = "SUP-001",
-                TIN = "888888888888",
+                TIN = "C88888888888",
                 Name = "Test Supplier Sdn Bhd",
                 BRN = "BRN-SUP-001",
                 Address = "789 Jalan Supplier, KL",

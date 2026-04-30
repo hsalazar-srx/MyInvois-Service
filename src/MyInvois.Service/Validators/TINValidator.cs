@@ -76,28 +76,22 @@ public class TINValidator : ITINValidator
             return false;
         }
 
-        // Validate length (exactly 12 characters)
-        if (tin.Length != TIN_LENGTH)
-        {
-            error = new ValidationError
-            {
-                FieldName = "TIN",
-                Message = $"TIN must be exactly {TIN_LENGTH} digits",
-                Severity = "Error",
-                ViolatedRule = "FixedLength_TIN"
-            };
-            return false;
-        }
+        // LHDN TIN formats (SDK v1.5):
+        //   Standard:        1 letter + 11 digits = 12 chars  (e.g. C20921865070)
+        //   Extended:        2 letters + 11 digits = 13 chars  (e.g. EI00000000030, IG11953977020)
+        // The 2-letter prefix is not restricted to "EI" — LHDN issues multiple prefixes
+        // (EI = foreign exemption, IG = individual/government, etc.)
+        bool isStandardTin = tin.Length == 12 && char.IsLetter(tin[0]) && tin[1..].All(char.IsDigit);
+        bool isExtendedTin = tin.Length == 13 && char.IsLetter(tin[0]) && char.IsLetter(tin[1]) && tin[2..].All(char.IsDigit);
 
-        // Validate all characters are numeric
-        if (!tin.All(char.IsDigit))
+        if (!isStandardTin && !isExtendedTin)
         {
             error = new ValidationError
             {
                 FieldName = "TIN",
-                Message = "TIN must contain only numeric digits",
+                Message = "TIN must be 12-char standard (e.g. C20921865070) or 13-char extended (e.g. EI00000000030, IG11953977020)",
                 Severity = "Error",
-                ViolatedRule = "NumericOnly_TIN"
+                ViolatedRule = "Format_TIN"
             };
             return false;
         }

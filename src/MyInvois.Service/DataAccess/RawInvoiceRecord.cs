@@ -128,6 +128,12 @@ public class RawInvoiceRecord
     public string? PostCode { get; set; }
 
     /// <summary>
+    /// Payer number — FSLEDG.ESPYNO. Used to join AR invoices to OINVOL
+    /// (FSLEDG has no direct column link to OINVOL; payer is the bridge).
+    /// </summary>
+    public string? PayerNo { get; set; }
+
+    /// <summary>
     /// Invoice line items. AR: from OINVOL (sales invoice lines).
     /// AP: from FGINLI + MPLINE (purchase invoice lines).
     /// Populated by data source implementation when querying DB2.

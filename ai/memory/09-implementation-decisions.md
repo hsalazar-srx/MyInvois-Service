@@ -544,4 +544,63 @@ and have SM-Portal call it via HTTP with an internal API key.**
 - `src/MyInvois.Api/Controllers/InvoicesController.cs`
 - `src/MyInvois.Api/Models/InvoiceModels.cs`
 
+---
+
+## ADR-016: AR Invoice Line Items — FSLEDG→OINVOH→ODLINE Join Path
+
+**Date:** 2026-04-02
+**Status:** Accepted
+
+### Context
+
+AR invoice line items were returning 0 rows for all invoices. Investigation revealed `BuildArLineItemsSql` used `OINVOL.OIIVNO` — a column that does not exist in `OINVOL` on this DB2 for i installation. The `OdbcException` was silently swallowed in `FetchArLineItemsAsync`, so 0 lines was the silent result for every AR invoice.
+
+An intermediate fix attempted `FSLEDG.ESPYNO = OINVOL.ONPYNO` but produced 1992–9066 duplicate rows per invoice (payer number is not unique per invoice — one payer has many invoices).
+
+### Decision
+
+**Use `FSLEDG → OINVOH (via ESVONO = UHVONO) → ODLINE (via UHIVNO = UBIVNO)` as the canonical AR line item join path.**
+
+### Rationale
+
+- `FSLEDG.ESVONO` = voucher number uniquely identifies one AR posting → one `OINVOH` row
+- `OINVOH.UHIVNO` = internal invoice number in ODLINE, the true delivery line FK
+- `OINVOL` is a routing/planning table; it has no reliable invoice-level line item link
+- Confirmed 96% coverage: 117 of 122 2026 AR invoices have ODLINE rows
+
+### Key DB2 Schema Facts (ODLINE)
+
+| Column | Meaning |
+|--------|---------|
+| `UBIVNO` | Internal invoice number (FK from `OINVOH.UHIVNO`) |
+| `UBIVQT` | Invoiced quantity |
+| `UBLNAM` | Line net amount |
+| `UBSAPR` | Unit sales price |
+| `UBSPUN` | Unit of measure (sales price) |
+| `UBITNO` | Item number |
+| `UBORNO` | Customer order number |
+| `UBPONR` / `UBPOSX` | Order line / sub-line (for ordering + OOLINE join) |
+
+### Totals Recalculation
+
+`FSLEDG.ESCUAM` is the full AR ledger amount but may span multiple deliveries. `ODLINE` rows from one voucher cover only one delivery. Extended `MovexInvoiceReader` totals recalculation (was AP-only) to both AP and AR: `TotalExclTax` / `TotalTax` / `TotalInclTax` are now recalculated from the sum of fetched ODLINE lines.
+
+### Classification Codes
+
+LHDN classification codes (001–045) are a **fixed LHDN reference table**. `MITMAS.MMITCL` is a MOVEX product group code — unrelated to LHDN codes. Removed MITMAS join. Default `"022"` (Others) used for all lines until Finance maps product groups to proper codes. Same correction applied to AP (was `"000"`).
+
+### Files Changed
+
+- `src/MyInvois.Service/DataAccess/DirectQueryDataSource.cs` — `BuildArLineItemsSql`, `FetchArLineItemsAsync`, `ArLineItemDto.ToLineRecord()`
+- `src/MyInvois.Service/DataAccess/RawInvoiceRecord.cs` — added `PayerNo` field
+- `src/MyInvois.Service/Services/MovexInvoiceReader.cs` — totals recalculation extended to AR
+
+### Consequences
+
+- ✅ 255+ AR invoices now have line items (was 0)
+- ✅ 3 AR invoices pass full local validation and reach LHDN pre-prod API
+- ✅ All 233 unit tests continue passing
+- ⚠️ 4% of 2026 AR invoices (5/122) have no ODLINE rows — these will generate "0 line items" validation errors; Finance must investigate
+- ⚠️ Finance team must map product groups (`MITMAS.MMITCL`) to LHDN classification codes before go-live; `"022"` is a placeholder
+
 **End of ADRs**

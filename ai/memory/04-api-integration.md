@@ -76,18 +76,57 @@ ORDER BY epacdt
 ```sql
 SELECT
     escono AS CompanyCode,
-    esinbn AS InvoiceNumber,
-    esvono AS VoucherNumber,
+    escino AS InvoiceNumber,
+    esvono AS VoucherNumber,       -- KEY: links to OINVOH.UHVONO for line items
+    TRIM(CHAR(esvono)) AS VoucherNumber,
     esacdt AS AccountingDate,
     escuam AS Amount,
     esvtam AS TaxAmount,
     esarat AS ExchangeRate,
-    escuno AS CustomerNumber
+    escuno AS CustomerNumber,
+    TRIM(espyno) AS PayerNo
 FROM {schema}.fsledg
 WHERE esacdt >= @fromDate
   AND estrcd IN (10, 11)  -- Invoice transaction codes
 ORDER BY esacdt
 ```
+
+**AR Line Items Join Path (FSLEDG → OINVOH → ODLINE)**:
+
+The correct join path for AR invoice line items, discovered 2026-04-02:
+
+```sql
+SELECT TRIM(f.ESCINO) AS InvoiceNo,
+    ROW_NUMBER() OVER (PARTITION BY f.ESCINO ORDER BY dl.UBPONR, dl.UBPOSX) AS LineNumber,
+    TRIM(dl.UBITNO) AS ItemNumber,
+    COALESCE(TRIM(ol.OBITDS), TRIM(dl.UBITNO), '') AS Description,
+    dl.UBIVQT AS Quantity,
+    COALESCE(TRIM(dl.UBSPUN), 'EA') AS UnitOfMeasure,
+    dl.UBSAPR AS UnitPrice,
+    dl.UBLNAM AS LineTotal,
+    COALESCE(TRIM(ol.OBVTCD), '') AS TaxCode,
+    0 AS TaxAmount
+FROM {schema}.FSLEDG f
+JOIN {schema}.OINVOH oh ON f.ESCONO = oh.UHCONO AND f.ESVONO = oh.UHVONO
+JOIN {schema}.ODLINE dl ON oh.UHCONO = dl.UBCONO AND oh.UHIVNO = dl.UBIVNO
+LEFT JOIN {schema}.OOLINE ol ON dl.UBCONO = ol.OBCONO
+    AND TRIM(dl.UBORNO) = TRIM(ol.OBORNO)
+    AND dl.UBPONR = ol.OBPONR AND dl.UBPOSX = ol.OBPOSX
+WHERE f.ESCONO = ? AND f.ESVONO IN ({placeholders})
+ORDER BY f.ESCINO, dl.UBPONR, dl.UBPOSX
+```
+
+**Key schema facts (ODLINE)**:
+- `UBIVNO` — internal invoice number (links from `OINVOH.UHIVNO`)
+- `UBIVQT` — invoiced quantity
+- `UBLNAM` — line amount (net)
+- `UBSAPR` — unit sales price
+- `UBSPUN` — unit of measure for sales price
+- `UBITNO` — item number (for description, join to OOLINE.OBITDS)
+
+**Why NOT OINVOL**: `OINVOL.OIIVNO` does not exist in MVXCOBJ. `OINVOL` is a routing/planning table with no reliable invoice line link. Using `FSLEDG.ESPYNO = OINVOL.ONPYNO` is non-unique (returns all invoices for a payer).
+
+**Classification Codes**: LHDN classification codes (001–045) are a fixed LHDN reference table. They are **NOT stored in MOVEX**. `MITMAS.MMITCL` is a MOVEX product group code — completely unrelated to LHDN codes. Default `"022"` (Others) is used until Finance maps product groups to proper codes.
 
 #### 2. StoredProcedureDataSource
 
@@ -128,15 +167,18 @@ public class RawInvoiceRecord
 {
     public string CompanyCode { get; set; }
     public string InvoiceNumber { get; set; }
-    public string VoucherNumber { get; set; }
-    public int AccountingDate { get; set; }       // YYYYMMDD as int
+    public string VoucherNumber { get; set; }  // FSLEDG.ESVONO — used as join key for AR line items
+    public int AccountingDate { get; set; }    // YYYYMMDD as int
     public decimal Amount { get; set; }
     public decimal TaxAmount { get; set; }
     public decimal ExchangeRate { get; set; }
     public string CounterpartyNumber { get; set; } // Supplier or Customer number
     public int TransactionCode { get; set; }
+    public string? PayerNo { get; set; }       // FSLEDG.ESPYNO — populated for AR invoices
 }
 ```
+
+**AR line item fetch key**: `FetchArLineItemsAsync` groups by `VoucherNumber` (ESVONO). The SQL uses `ESVONO IN (?)` and joins via `OINVOH.UHVONO`. Do NOT use `(InvoiceNumber, PayerNo)` as key for AR — payer number is non-unique across invoices.
 
 ### Implementation (MovexInvoiceReader)
 

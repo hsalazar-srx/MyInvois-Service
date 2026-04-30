@@ -103,16 +103,20 @@ public class MyInvoisMapper : IMyInvoisMapper
             PayableAmount = invoice.TotalInclTax
         };
 
-        // Map parties based on invoice type
+        // Map parties and document type based on invoice type
         if (invoice.InvoiceType == "Sales")
         {
             // Sales (AR): Our company is the Supplier, Customer is the Buyer
+            // LHDN type 01 — submitting party TIN must match Supplier TIN
+            document.DocumentTypeCode = "01";
             MapOurCompanyAsSupplier(document, invoice.CompanyCode);
             MapExternalPartyAsBuyer(document, invoice.Buyer);
         }
         else // Purchase (AP)
         {
             // Purchase (AP): External supplier is the Supplier, Our company is the Buyer
+            // LHDN type 11 (self-billed) — submitting party TIN must match Buyer TIN
+            document.DocumentTypeCode = "11";
             MapExternalPartyAsSupplier(document, invoice.Supplier);
             MapOurCompanyAsBuyer(document, invoice.CompanyCode);
         }

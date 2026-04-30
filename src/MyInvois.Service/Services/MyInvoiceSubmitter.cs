@@ -8,6 +8,9 @@ using Polly;
 using Polly.Retry;
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
 
 /// <summary>
@@ -15,7 +18,7 @@ using System.Text.Json;
 ///
 /// Responsibilities:
 /// - Manage OAuth tokens (cache with 1-hour TTL)
-/// - Submit XML documents to MyInvois API
+/// - Build JSON submission payloads per LHDN SDK v1.5 /documentsubmissions format
 /// - Handle MyInvois error responses (DS302, 429, 401, etc.)
 /// - Implement rate limiting (100 req/minute)
 /// - Extract MyInvois UUID from response
@@ -118,16 +121,13 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
             // 1. Get OAuth token (uses oauth-token-manager skill)
             var token = await GetAccessToken(cancellationToken);
 
-            // 2. Serialize to XML (uses myinvois-document-builder skill)
-            var xml = SerializeToUBL21(document);
-
-            // 3. Sign with XAdES (uses xades-signer skill)
-            var signedXml = SignDocument(xml, document);
+            // 2+3. Build UBL 2.1 JSON, sign (XAdES), base64-encode, wrap in submission envelope
+            var payload = BuildSubmissionPayload(document);
 
             // 4. Submit with Polly retry policy (uses resilience-patterns skill)
             var response = await _retryPolicy.ExecuteAsync(async () =>
             {
-                return await SubmitToMyInvois(signedXml, token, cancellationToken);
+                return await SubmitToMyInvois(payload, token, cancellationToken);
             });
 
             stopwatch.Stop();
@@ -201,8 +201,15 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
             _logger.LogInformation("Fetching new OAuth token from MyInvois");
 
             // Fetch new token from MyInvois
+            // Per LHDN SDK FAQ: identity service is co-hosted with the API (same base URL).
+            // Pre-prod: https://preprod-api.myinvois.hasil.gov.my/connect/token
+            // Production: https://api.myinvois.hasil.gov.my/connect/token
+            // "identity.myinvois.hasil.gov.my" and "sandbox.myinvois.*" are NOT API endpoints.
             var httpClient = _httpClientFactory.CreateClient("MyInvois");
-            var tokenEndpoint = $"{_settings.BaseUrl}{_settings.TokenEndpoint}";
+            var identityBase = string.IsNullOrEmpty(_settings.IdentityBaseUrl)
+                ? _settings.BaseUrl
+                : _settings.IdentityBaseUrl;
+            var tokenEndpoint = $"{identityBase}{_settings.TokenEndpoint}";
 
             var request = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint)
             {
@@ -257,44 +264,73 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
     #region Private Helper Methods
 
     /// <summary>
-    /// Serialize MyInvoiceDocument to UBL 2.1 XML format
-    /// Uses skill: integration/myinvois-document-builder v1.0+
+    /// Build the LHDN /api/v1.0/documentsubmissions envelope per SDK v1.5:
+    ///   1. Build signed UBL 2.1 JSON document via UblDocumentBuilder
+    ///   2. Minify → SHA-256 hex documentHash
+    ///   3. Base64-encode minified JSON → "document" field
+    ///   4. Wrap in { "documents": [ { format, documentHash, codeNumber, document } ] }
     /// </summary>
-    private string SerializeToUBL21(MyInvoiceDocument document)
+    private string BuildSubmissionPayload(MyInvoiceDocument document)
     {
-        // TODO: Use MyInvois SDK for UBL 2.1 serialization
-        // Placeholder - actual implementation uses SDK
-        _logger.LogDebug("Serializing invoice {InvoiceNumber} to UBL 2.1 format", document.InvoiceNumber);
+        _logger.LogDebug("Building UBL 2.1 submission payload for invoice {InvoiceNumber}", document.InvoiceNumber);
 
-        // Minimal placeholder XML (replace with actual UBL 2.1 generation)
-        return $@"<?xml version=""1.0"" encoding=""UTF-8""?>
-<Invoice xmlns=""urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"">
-    <ID>{document.InvoiceNumber}</ID>
-    <IssueDate>{document.IssueDate}</IssueDate>
-    <IssueTime>{document.IssueTime}</IssueTime>
-</Invoice>";
+        object ublDoc;
+        if (string.IsNullOrEmpty(_settings.CertificatePath))
+        {
+            // Graceful degradation: no certificate configured (e.g., test environment)
+            // Build unsigned document so HTTP submission path can still be exercised
+            _logger.LogWarning("CertificatePath not configured — building unsigned UBL document for invoice {InvoiceNumber}.", document.InvoiceNumber);
+            ublDoc = UblDocumentBuilder.BuildUnsigned(document);
+        }
+        else
+        {
+            var certificate = new X509Certificate2(
+                _settings.CertificatePath,
+                _settings.CertificatePassword,
+                X509KeyStorageFlags.Exportable);
+
+            if (!certificate.HasPrivateKey)
+                throw new InvalidOperationException("Certificate does not contain a private key.");
+
+            _logger.LogInformation("Signing invoice {InvoiceNumber} with certificate {Thumbprint}",
+                document.InvoiceNumber, certificate.Thumbprint);
+
+            ublDoc = UblDocumentBuilder.BuildSigned(document, certificate);
+        }
+
+        var minifiedJson = UblDocumentBuilder.Minify(ublDoc);
+
+        // documentHash = SHA-256 hex of minified JSON
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(minifiedJson));
+        var documentHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
+
+        // document field = base64 of minified JSON
+        var documentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(minifiedJson));
+
+        var payload = new
+        {
+            documents = new[]
+            {
+                new
+                {
+                    format = "JSON",
+                    documentHash,
+                    codeNumber = document.InvoiceNumber,
+                    document = documentBase64
+                }
+            }
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = false });
     }
 
     /// <summary>
-    /// Sign XML document with XAdES v1.1 digital signature
-    /// Uses skill: integration/xades-signer v1.0+
-    /// </summary>
-    private string SignDocument(string xml, MyInvoiceDocument document)
-    {
-        // TODO: Use MyInvois SDK for XAdES v1.1 signing
-        // Placeholder - actual implementation uses SDK
-        _logger.LogDebug("Signing invoice {InvoiceNumber} with XAdES v1.1", document.InvoiceNumber);
-
-        // Return unsigned XML for now (signing requires certificate setup)
-        return xml;
-    }
-
-    /// <summary>
-    /// Submit signed XML to MyInvois API
+    /// Submit JSON payload to MyInvois API /documentsubmissions endpoint.
+    /// Content-Type: application/json per LHDN SDK v1.5 specification.
     /// Uses skill: integration/api-rate-limiter v1.0+
     /// </summary>
     private async Task<HttpResponseMessage> SubmitToMyInvois(
-        string signedXml,
+        string jsonPayload,
         string token,
         CancellationToken cancellationToken)
     {
@@ -304,7 +340,7 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         var request = new HttpRequestMessage(HttpMethod.Post, submissionEndpoint)
         {
             Headers = { { "Authorization", $"Bearer {token}" } },
-            Content = new StringContent(signedXml, System.Text.Encoding.UTF8, "application/xml")
+            Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json")
         };
 
         _logger.LogDebug("POST {Endpoint}", submissionEndpoint);

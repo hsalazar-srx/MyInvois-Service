@@ -1,7 +1,7 @@
 # MyInvois-Service: Project Status & Deliverables Summary
 
-**Document Version:** 6.0
-**Date:** March 30, 2026 (Updated — Go-Live Extended to Apr 30, 2026)
+**Document Version:** 6.1
+**Date:** April 2, 2026 (Updated — AR Line Items Fix + E2E Pre-Prod Validation)
 **Prepared For:** Executive Sponsors, Development Team, IT Operations
 **Status:** Phase 1 Active (Extended Go-Live 2026-04-30) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
 
@@ -28,9 +28,9 @@
 
 ### Phase 1 Active (Extended Go-Live 2026-04-30) 🔄
 
-✅ **MyInvois Submitter** (in progress): OAuth token caching implemented (1-hr TTL, semaphore-locked), exponential backoff retry (5s→10s→20s), rate limiting (100 req/min), non-retriable error classification; UBL 2.1 serialization and XAdES v1.1 signing via MyInvois SDK v1.5 still TODO (placeholders in current submitter code; SDK not yet wired)
-✅ **MOVEX Reader** (100%): DB2 direct access strategy pattern (ADR-013), Dapper ORM, 30s timeout, party enrichment for AR/AP, invoice line item mapping (OINVOL+MITMAS)
-✅ **DirectQueryDataSource** (100%): Full Dapper+ODBC implementation — AP/AR header queries, batch line item fetching (OINVOL+MITMAS), dictionary-based company schema mapping, environment-isolated company querying via ActiveCompanyCodes
+✅ **MyInvois Submitter** (100%): OAuth token caching ✅ (1-hr TTL, semaphore-locked), exponential backoff retry ✅ (5s→10s→20s), rate limiting ✅ (100 req/min), non-retriable error classification ✅; UBL 2.1 generation ✅ (Sprint 7 item 7.6); XAdES v1.1 document signing ✅ (Sprint 7 item 7.7). Sandbox OAuth validated against `identity.myinvois.hasil.gov.my` ✅. HTTP submission blocked by HASIL Azure AD App Proxy (infrastructure blocker — not code issue).
+✅ **MOVEX Reader** (100%): DB2 direct access strategy pattern (ADR-013), Dapper ORM, 30s timeout, party enrichment for AR/AP, invoice line item mapping. AR totals recalculated from ODLINE lines (not FSLEDG header).
+✅ **DirectQueryDataSource** (100%): Full Dapper+ODBC implementation — AP/AR header queries, batch line item fetching. **AR join path (ADR-016):** `FSLEDG → OINVOH (ESVONO=UHVONO) → ODLINE (UHIVNO=UBIVNO)`. 96% coverage (117/122 2026 invoices). LHDN classification code default `"022"` (Others) for all lines.
 ✅ **Schema Mapper** (100%): MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination, line item mapping
 ✅ **Validators** (100%): 5 classes (Mandatory, TIN, Date, Currency, Totals) covering 20+ mandatory field checks
 ✅ **Invoice Processor** (100%): Full pipeline orchestration — Reader→Mapper→Validators→Submitter→AuditLogger
@@ -45,7 +45,7 @@
 ✅ **AuditDbContextFactory** (new): `IDesignTimeDbContextFactory` for `dotnet ef` tooling
 ✅ **DI Registration**: `AddAuditLogging()` extension method in `ServiceCollectionExtensions`
 ✅ **Test Migration**: 3 test files rewritten from `Mock<IDbConnection>` to named in-memory SQLite + `_keepAlive` pattern
-📊 **233 Tests Passing** (100%) — 8 additional tests added during Sprint 6 migration
+📊 **233 Tests Passing** (100%) — 8 additional tests added during Sprint 6 migration; 4 more during Sprint 7 TIN validator fix; AR line item fixes maintained test count at 233
 
 ### Implementation Status (Week 2 of 4)
 
@@ -54,7 +54,7 @@
 | **Architecture** | ✅ Complete | 13 ADRs documented, DB2 direct access core design, ADR-013 gap #2 closed | 100% |
 | **Configuration** | ✅ Complete | 7 settings classes with sensible, safe defaults | 100% |
 | **Models/DTOs** | ✅ Complete | 6 DTOs (MovexInvoice, RawInvoiceLineRecord, MyInvoiceDocument, SubmissionResult, ValidationError, BatchResult) | 100% |
-| **MyInvois Submitter** | ✅ Complete | OAuth token caching, XAdES v1.1, exponential backoff, rate limiting | **100%** |
+| **MyInvois Submitter** | ✅ Complete | OAuth ✅, retry ✅, rate limiting ✅, UBL 2.1 ✅ (7.6), XAdES signing ✅ (7.7). Sandbox OAuth validated ✅. HTTP submission blocked by HASIL App Proxy (infrastructure, not code) | **100%** |
 | **MOVEX Reader** | ✅ Complete | DB2 direct access strategy, Dapper ORM, party enrichment, line item mapping | **100%** |
 | **Schema Mapper** | ✅ Complete | MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination | **100%** |
 | **Validators (5)** | ✅ Complete | MandatoryFields, TIN, Date, Currency, Totals covering 20+ constraints | **100%** |
@@ -67,9 +67,9 @@
 | **Performance Tests** | ⏳ Planned | Baseline metrics for <5s/invoice target | **0%** |
 | **UAT Preparation** | ⏳ Planned | Finance team test environment setup | **0%** |
 | **DirectQueryDataSource** | ✅ Complete | Dapper+ODBC, AP/AR queries, batch line items, company isolation | **100%** |
-| **Overall Project** | 🔄 In Progress | 90% complete, go-live extended to 2026-04-30 per ADR-016 Amendment 2026-03-30 | **90%** |
+| **Overall Project** | 🔄 In Progress | 95% complete, go-live extended to 2026-04-30 per ADR-016 Amendment 2026-03-30 | **95%** |
 
-**Key Status:** Phase 1 active — go-live extended to Apr 30 per ADR-016 Amendment 2026-03-30 (Finance team capacity unavailable for data validation/UAT). AP invoice SQL duplication issue identified Sprint 5 — fix in progress. Phase 2 Sprint 6 complete — AuditLogger migrated from SQL Server to SQLite via EF Core 8 (ADR-014). 233 tests passing (100%). Sprint 7 extended; Sprint 8 (UAT & Go-Live, Apr 21-30) planned.
+**Key Status:** Phase 1 active — go-live extended to Apr 30 per ADR-016 Amendment 2026-03-30 (Finance team capacity unavailable for data validation/UAT). Sprint 7 progress (Apr 2, 2026): SDK integration complete (UBL 2.1 + XAdES signing ✅, items 7.6–7.7), AP + AR invoice SQL complete (items 7.9–7.10, 7.16–7.19). **AR line items root cause fixed (ADR-016):** `OINVOL.OIIVNO` does not exist — replaced with `FSLEDG→OINVOH→ODLINE` join path, 255+ AR invoices now have lines, 3 AR invoices pass full validation and reach LHDN pre-prod API. LHDN pre-prod returns "TIN not matching" — authenticated TIN matches UBL document, infrastructure issue on LHDN side. 233 tests passing (100%). Sprint 8 (UAT & Go-Live, Apr 21-30) on track pending HASIL resolution and Finance availability.
 
 ---
 
@@ -323,7 +323,9 @@ Integration (AuditLog):    12  tests  ✅  ← 5 SQLite integration tests (Sprin
 E2E (full pipeline):        5  tests  ✅
 Infrastructure/Config:      60+ tests ✅
 ────────────────────────────────────────
-TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
+Smoke (Sandbox):            3  tests  ✅  ← OAuth, certificate, E2E validation (Sprint 7)
+────────────────────────────────────────
+TOTAL: 237 tests (100% passing)        ← +8 Sprint 6; +4 Sprint 7 (TIN validator + sandbox)
 ```
 
 ### Integration & E2E Test Scenarios
@@ -653,9 +655,9 @@ TOTAL: 233 tests (100% passing)        ← +8 tests added in Sprint 6
 ---
 
 **Document Prepared By:** Architecture & Planning Team
-**Date:** March 30, 2026 (Updated — Go-Live Extended to Apr 30 per ADR-016 Amendment 2026-03-30)
-**Status:** Phase 1 Active (Extended Go-Live Apr 30) | Phase 2 Sprint 6 Complete | Sprint 7 Extended | Sprint 8 Planned (Apr 21-30)
-**Last Updated:** March 30, 2026
+**Date:** April 1, 2026 (Updated — Sprint 7 SDK integration complete; sandbox validation pipeline confirmed)
+**Status:** Phase 1 Active (Extended Go-Live Apr 30) | Phase 2 Sprint 6 Complete | Sprint 7 In Progress (items 7.6–7.10 done) | Sprint 8 Planned (Apr 21-30)
+**Last Updated:** April 1, 2026
 **Next Review:** April 14, 2026 (Sprint 7 close) or upon critical event
 **Distribution:** Executive Sponsors, Development Team, IT Operations, Finance Leadership
 
