@@ -326,27 +326,18 @@ public class SandboxSubmissionTest
         _output.WriteLine("");
         _output.WriteLine("=== END OF SANDBOX TEST ===");
 
-        // NOTE: HASIL sandbox (sandbox.myinvois.hasil.gov.my) is behind Azure AD Application Proxy.
-        // All API requests (GET/POST /api/v1.0/*) redirect to Microsoft SSO even with a valid
-        // Bearer token from identity.myinvois.hasil.gov.my — the App Proxy requires a browser
-        // session cookie in addition to the token.
-        //
-        // This is a HASIL sandbox infrastructure limitation, NOT a code issue.
-        // The token endpoint (identity.myinvois.hasil.gov.my) and the API endpoint (sandbox.*)
-        // are separately gated. Resolution: request HASIL to allowlist our client_id for
-        // App Proxy passthrough, OR test against their pre-production environment if available.
-        //
-        // The test passes as long as validation succeeds (code is correct up to HTTP submit).
         results.Should().NotBeEmpty("At least one invoice should have been processed");
 
-        // All invoices should pass validation (submission failures due to App Proxy are expected)
         var validationFails = results.Where(r => r.Status == "ValidationFailed").ToList();
         validationFails.Should().BeEmpty(
             $"No invoices should fail validation. Failures: {string.Join(", ", validationFails.Select(r => $"{r.InvoiceNo}: {r.Detail}"))}");
 
+        var submissionFails = results.Where(r => r.Status != "Success" && r.Status != "ValidationFailed" && r.Status != "Skipped").ToList();
+        submissionFails.Should().BeEmpty(
+            $"No invoices should fail submission. Failures: {string.Join(", ", submissionFails.Select(r => $"{r.InvoiceNo}: {r.Status} — {r.Detail}"))}");
+
         _output.WriteLine("");
-        _output.WriteLine("ℹ️ Submission blocked by HASIL sandbox Azure AD App Proxy (expected in sandbox).");
-        _output.WriteLine("   Resolution: Request HASIL to allowlist client_id for App Proxy passthrough.");
+        _output.WriteLine($"✅ All {results.Count} invoices submitted successfully to LHDN pre-prod.");
     }
 
     #region Helpers
