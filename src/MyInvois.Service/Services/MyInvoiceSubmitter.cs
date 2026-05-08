@@ -137,16 +137,38 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
             if (response.IsSuccessStatusCode)
             {
                 var content = await response.Content.ReadAsStringAsync(cancellationToken);
+                result.RawResponse = content;
                 var submissionResponse = JsonSerializer.Deserialize<MyInvoisSubmissionResponse>(content);
 
-                result.Status = "Success";
-                result.MyInvoisUUID = submissionResponse?.Uuid ?? string.Empty;
-                result.RawResponse = content;
+                // LHDN returns HTTP 200 even when individual documents are rejected.
+                // Must check rejectedDocuments to determine true outcome.
+                var rejected = submissionResponse?.RejectedDocuments?.FirstOrDefault(
+                    d => d.InvoiceCodeNumber == document.InvoiceNumber);
+                var accepted = submissionResponse?.AcceptedDocuments?.FirstOrDefault(
+                    d => d.Uuid != null);
 
-                _logger.LogInformation(
-                    "Invoice {InvoiceNumber} submitted successfully. UUID: {UUID}",
-                    document.InvoiceNumber,
-                    result.MyInvoisUUID);
+                if (rejected != null)
+                {
+                    result.Status = "Failed";
+                    result.ErrorCode = rejected.Error?.Code ?? "LHDN_REJECTED";
+                    result.ErrorMessage = rejected.Error?.Message
+                        + (rejected.Error?.Details?.Count > 0
+                            ? " | " + string.Join("; ", rejected.Error.Details.Select(d => $"{d.Code}: {d.Message}"))
+                            : string.Empty);
+                    _logger.LogWarning(
+                        "Invoice {InvoiceNumber} rejected by LHDN. Code: {Code} Message: {Message}",
+                        document.InvoiceNumber, result.ErrorCode, result.ErrorMessage);
+                }
+                else
+                {
+                    result.Status = "Success";
+                    result.MyInvoisUUID = accepted?.Uuid
+                        ?? submissionResponse?.SubmissionUid
+                        ?? string.Empty;
+                    _logger.LogInformation(
+                        "Invoice {InvoiceNumber} submitted successfully. UUID: {UUID}",
+                        document.InvoiceNumber, result.MyInvoisUUID);
+                }
             }
             else
             {
@@ -422,18 +444,62 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
     }
 
     /// <summary>
-    /// MyInvois submission response
+    /// LHDN MyInvois document submission response envelope.
+    /// Per LHDN SDK v1.5: HTTP 200 is returned even when individual documents are rejected.
+    /// Always check RejectedDocuments — do not treat HTTP 200 as unconditional success.
     /// </summary>
     private class MyInvoisSubmissionResponse
     {
+        [System.Text.Json.Serialization.JsonPropertyName("submissionUid")]
+        public string? SubmissionUid { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("acceptedDocuments")]
+        public List<AcceptedDocument>? AcceptedDocuments { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("rejectedDocuments")]
+        public List<RejectedDocument>? RejectedDocuments { get; set; }
+    }
+
+    private class AcceptedDocument
+    {
         [System.Text.Json.Serialization.JsonPropertyName("uuid")]
-        public string Uuid { get; set; } = string.Empty;
+        public string? Uuid { get; set; }
 
-        [System.Text.Json.Serialization.JsonPropertyName("submissionDate")]
-        public string SubmissionDate { get; set; } = string.Empty;
+        [System.Text.Json.Serialization.JsonPropertyName("invoiceCodeNumber")]
+        public string? InvoiceCodeNumber { get; set; }
+    }
 
-        [System.Text.Json.Serialization.JsonPropertyName("status")]
-        public string Status { get; set; } = string.Empty;
+    private class RejectedDocument
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("invoiceCodeNumber")]
+        public string? InvoiceCodeNumber { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("error")]
+        public LhdnError? Error { get; set; }
+    }
+
+    private class LhdnError
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("code")]
+        public string? Code { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
+        public string? Message { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("details")]
+        public List<LhdnErrorDetail>? Details { get; set; }
+    }
+
+    private class LhdnErrorDetail
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("code")]
+        public string? Code { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
+        public string? Message { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("target")]
+        public string? Target { get; set; }
     }
 
     /// <summary>

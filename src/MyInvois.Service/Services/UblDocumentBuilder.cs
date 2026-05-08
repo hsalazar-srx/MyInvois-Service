@@ -167,7 +167,7 @@ public static class UblDocumentBuilder
                     },
                     PostalAddress = new[] { BuildAddress(addressLines, "MYS") },
                     PartyLegalEntity = new[] { new { RegistrationName = V(doc.SupplierName) } },
-                    Contact = new[] { new { Telephone = V("NA"), ElectronicMail = V("NA") } }
+                    Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.SupplierPhone) ? "60000000" : doc.SupplierPhone) } }
                 }
             }
         };
@@ -194,7 +194,7 @@ public static class UblDocumentBuilder
                     },
                     PostalAddress = new[] { BuildAddress(addressLines, "MYS") },
                     PartyLegalEntity = new[] { new { RegistrationName = V(doc.BuyerName) } },
-                    Contact = new[] { new { Telephone = V("NA"), ElectronicMail = V("NA") } }
+                    Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.BuyerPhone) ? "60000000" : doc.BuyerPhone) } }
                 }
             }
         };

@@ -270,6 +270,7 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.SupplierBRN = company.BRN;
         document.SupplierIdScheme = company.IdScheme;
         document.SupplierAddress = company.Address;
+        document.SupplierPhone = company.Phone;
     }
 
     private void MapOurCompanyAsBuyer(MyInvoiceDocument document, string companyCode)
@@ -287,6 +288,7 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerAlternativeId = company.BRN;
         document.BuyerIdScheme = company.IdScheme;
         document.BuyerAddress = company.Address;
+        document.BuyerPhone = company.Phone;
     }
 
     private void MapExternalPartyAsSupplier(MyInvoiceDocument document, InvoiceParty? supplier)
