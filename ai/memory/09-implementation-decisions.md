@@ -603,4 +603,85 @@ LHDN classification codes (001–045) are a **fixed LHDN reference table**. `MIT
 - ⚠️ 4% of 2026 AR invoices (5/122) have no ODLINE rows — these will generate "0 line items" validation errors; Finance must investigate
 - ⚠️ Finance team must map product groups (`MITMAS.MMITCL`) to LHDN classification codes before go-live; `"022"` is a placeholder
 
+---
+
+## ADR-017: XAdES Signature — Correct Digest Scope (DS320/DS322 Fix)
+
+**Date:** 2026-05-11
+**Status:** Accepted
+
+### Context
+
+All invoice submissions returned HTTP 200 (accepted) but LHDN's asynchronous Step 08 validator subsequently moved every document to `Invalid` state with two errors:
+
+- **DS320** — Signed properties digest value doesn't match digest calculated value from provided signed properties section where ID is `id-xades-signed-props`
+- **DS322** — Document digest value doesn't match digest calculated value from existing document content
+
+Finance Manager confirmed zero valid documents in the portal. The bugs existed since the XAdES signing implementation in Sprint 7 (2026-04-01) but were not detected because the HTTP 200 response was treated as success, and no portal check was performed until May 2026.
+
+### Root Cause — DS322 (Document Digest)
+
+`BuildSigned` computed `docDigest` over `BuildUnsigned(doc)` (no `UBLExtensions`). `BuildSubmissionPayload` then sent `Minify(signedDoc)` base64-encoded — the signed document includes `UBLExtensions`. LHDN decodes the base64, strips `UBLExtensions`, re-hashes, and compares to `docDigest`. Any serialization difference between the unsigned document used for hashing and the LHDN-reconstructed canonical form produced a mismatch.
+
+### Root Cause — DS320 (SignedProperties Digest)
+
+`BuildSignedProperties` returned a standalone wrapper `{ "SignedProperties": [...] }` which was hashed for `propsDigest`. The same SignedProperties content was then **reconstructed as a separate object literal** inside `QualifyingProperties` in `UBLExtensions`. LHDN re-extracts the `SignedProperties` node from the embedded document and re-hashes it. Two separate `new { ... }` object literals in C# are not guaranteed to serialize identically — and the wrapper was included in the hash but not in the embedded structure.
+
+### Decision
+
+**Fix both digest scopes so hashed bytes and embedded bytes are byte-for-byte identical.**
+
+1. **DocDigest** — computed over `Minify(BuildUnsigned(doc))`. This canonical JSON (with `Signature` element, without `UBLExtensions`) is exactly what LHDN reconstructs when it strips `UBLExtensions` from the submitted document.
+
+2. **PropsDigest** — computed over `Minify(signedPropsNode)` where `signedPropsNode` is the inner array `[{ Id, SignedSignatureProperties }]` — no wrapper. The **same object reference** is then embedded directly into `QualifyingProperties.SignedProperties`, guaranteeing identical serialization.
+
+### Signing Sequence (correct — per LHDN SDK v1.5)
+
+```
+1. canonicalDoc = BuildUnsigned(doc)          // includes Signature element, no UBLExtensions
+2. canonicalJson = Minify(canonicalDoc)
+3. docDigest = SHA256(canonicalJson) → base64
+4. sig = RSA-SHA256(canonicalJson) → base64   // sign canonical bytes, not signed doc
+5. certDigest = SHA256(cert.RawData) → base64
+6. signedPropsNode = [{ Id, SignedSignatureProperties }]  // inner array only, no wrapper
+7. propsDigest = SHA256(Minify(signedPropsNode)) → base64
+8. ublExtensions = BuildUblExtensions(..., signedPropsNode)  // embed same object reference
+9. finalDoc = envelope with ublExtensions      // submitted bytes include UBLExtensions
+```
+
+### Concurrent Fixes
+
+**CF403/CF414 (Contact validation):** `UblDocumentBuilder` emitted `"NA"` for both `Telephone` and `ElectronicMail`. LHDN requires Telephone ≥ 8 characters and rejects `"NA"` email format. Fix: removed `ElectronicMail`; `Telephone` populated from `CompanyDetails.Phone` config field. Added `SupplierPhone`/`BuyerPhone` to `MyInvoiceDocument` and `Phone` to `CompanyDetails`.
+
+**CF321 (Date too old — pre-prod only):** AP invoices posted this week carry old supplier issue dates. AR invoices always use today's date (FSLEDG has no separate invoice date column → mapper fallback = `DateTime.UtcNow`). Not a code bug. Smoke test updated to prefer recent-dated invoices and treat CF321 as a warning rather than hard failure.
+
+### LHDN Async Validation Model
+
+HTTP 200 from `/documentsubmissions` = synchronous acceptance only. Step 08 (signature validation) runs asynchronously. A document can be accepted synchronously and invalidated minutes later. Always verify UUID status in the portal after submission — do not treat HTTP 200 as definitive success.
+
+### Confirmed Working Submissions (2026-05-11)
+
+| Invoice | UUID | Amount |
+|---------|------|--------|
+| 009709972 | `V99AK6H7RF5G0ETZHJ61QARK10` | MYR 257.40 |
+| 009709973 | `BF4CNPV9GW80DFKATX61QARK10` | MYR 3,008.00 |
+| 009709974 | `5T0WTYS9KGMZ4Z086A71QARK10` | MYR 9,886.55 |
+
+### Files Changed
+
+- `src/MyInvois.Service/Services/UblDocumentBuilder.cs` — `BuildSigned`, `BuildSignedPropertiesNode` (renamed and refactored), `BuildUblExtensions` (accepts `signedPropsNode`)
+- `src/MyInvois.Service/Models/MyInvoiceDocument.cs` — added `SupplierPhone`, `BuyerPhone`
+- `src/MyInvois.Service/Configuration/CompanySettings.cs` — added `Phone`
+- `src/MyInvois.Service/Services/MyInvoisMapper.cs` — populate `SupplierPhone`/`BuyerPhone`
+- `appsettings.json` — `Companies[100/300].Phone = "6072319006"`
+- `tests/.../Smoke/FullPipelineSmokeTest.cs` — CF321 tolerance, recent-date preference
+
+### Consequences
+
+- ✅ 3 AR invoices accepted and validated by LHDN pre-prod (DS320/DS322 eliminated)
+- ✅ Full pipeline smoke test passes (CF321 correctly treated as environmental, not code bug)
+- ✅ Contact block now valid (real phone number, no email placeholder)
+- ⚠️ All prior submissions (before 2026-05-11) had broken signatures — they will show DS320/DS322 in portal and cannot be corrected; they must be resubmitted
+- ⚠️ HTTP 200 from LHDN is not a sufficient success signal — portal verification required
+
 **End of ADRs**

@@ -52,18 +52,28 @@ public static class UblDocumentBuilder
     /// </summary>
     public static object BuildSigned(MyInvoiceDocument doc, X509Certificate2 certificate)
     {
-        // Step 1 — canonical document (no UBLExtensions, no Signature element)
-        var unsignedEnvelope = BuildUnsigned(doc);
-        var unsignedJson = Minify(unsignedEnvelope);
+        // Per LHDN SDK v1.5 signing specification:
+        //
+        // Step 1: Build the invoice body WITH the Signature element but WITHOUT UBLExtensions.
+        //         Hash THIS exact serialization for docDigest.
+        //         This is what LHDN will decode from base64 and re-hash for DS322 validation.
+        var canonicalEnvelope = new UblEnvelope
+        {
+            D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
+            A = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+            B = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions: null) }
+        };
+        var canonicalJson = Minify(canonicalEnvelope);
 
-        // Step 2 — document digest
-        var docHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(unsignedJson));
+        // Step 2 — document digest over canonical bytes
+        var docHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson));
         var docDigest = Convert.ToBase64String(docHashBytes);
 
-        // Step 3 — sign with RSA-SHA256
+        // Step 3 — sign the canonical bytes with RSA-SHA256
         using var rsa = certificate.GetRSAPrivateKey()
             ?? throw new InvalidOperationException("Certificate does not contain an RSA private key.");
-        var sigBytes = rsa.SignData(Encoding.UTF8.GetBytes(unsignedJson), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var sigBytes = rsa.SignData(Encoding.UTF8.GetBytes(canonicalJson), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var sig = Convert.ToBase64String(sigBytes);
 
         // Step 4 — certificate digest (SHA-256 of DER-encoded cert)
@@ -71,26 +81,29 @@ public static class UblDocumentBuilder
         var certHashBytes = SHA256.HashData(certDer);
         var certDigest = Convert.ToBase64String(certHashBytes);
 
-        // Step 5 — signed properties digest
+        // Step 5 — signed properties digest.
+        //   Must hash the SignedProperties object EXACTLY as it will appear embedded in UBLExtensions,
+        //   because LHDN re-computes the digest from the embedded node for DS320 validation.
+        //   Build it once, serialize it, hash it, then reuse the same object in UBLExtensions.
         var signingTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
         var issuerName = certificate.IssuerName.Name ?? string.Empty;
         var serialNumber = certificate.SerialNumber ?? string.Empty;
-        // Serial from X509 is hex — convert to decimal string as LHDN sample shows
         var serialDecimal = HexToDecimalString(serialNumber);
 
-        var signedProps = BuildSignedProperties(certDigest, signingTime, issuerName, serialDecimal);
-        var propsJson = Minify(signedProps);
+        var signedPropsNode = BuildSignedPropertiesNode(certDigest, signingTime, issuerName, serialDecimal);
+        var propsJson = Minify(signedPropsNode);
         var propsHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(propsJson));
         var propsDigest = Convert.ToBase64String(propsHashBytes);
 
-        // Step 6 — assemble UBLExtensions
+        // Step 6 — assemble UBLExtensions using the same signedPropsNode
         var certBase64 = Convert.ToBase64String(certDer);
         var ublExtensions = BuildUblExtensions(
             sig, docDigest, propsDigest,
             certBase64, certDigest,
-            signingTime, issuerName, serialDecimal);
+            signingTime, issuerName, serialDecimal, signedPropsNode);
 
-        // Final document with signature embedded
+        // Final document: canonical body + UBLExtensions prepended.
+        // The submitted bytes must be: Minify(this) — and LHDN strips UBLExtensions before re-hashing.
         return new UblEnvelope
         {
             D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
@@ -347,44 +360,46 @@ public static class UblDocumentBuilder
     // XAdES signature structures
     // -----------------------------------------------------------------------
 
-    private static object BuildSignedProperties(string certDigest, string signingTime, string issuerName, string serialDecimal)
+    /// <summary>
+    /// Build the SignedProperties node that will be embedded in QualifyingProperties.
+    /// This exact object is also serialized and hashed to produce propsDigest (DS320).
+    /// LHDN re-computes the digest from the embedded node — the hashed bytes and the
+    /// embedded node must be identical serializations of the same object instance.
+    /// </summary>
+    private static object BuildSignedPropertiesNode(string certDigest, string signingTime, string issuerName, string serialDecimal)
     {
-        // This object is hashed to produce PropsDigest — structure must be stable
-        return new
+        return new[]
         {
-            SignedProperties = new[]
+            new
             {
-                new
+                Id = "id-xades-signed-props",
+                SignedSignatureProperties = new[]
                 {
-                    Id = "id-xades-signed-props",
-                    SignedSignatureProperties = new[]
+                    new
                     {
-                        new
+                        SigningTime = V(signingTime),
+                        SigningCertificate = new[]
                         {
-                            SigningTime = V(signingTime),
-                            SigningCertificate = new[]
+                            new
                             {
-                                new
+                                Cert = new[]
                                 {
-                                    Cert = new[]
+                                    new
                                     {
-                                        new
+                                        CertDigest = new[]
                                         {
-                                            CertDigest = new[]
+                                            new
                                             {
-                                                new
-                                                {
-                                                    DigestMethod = new[] { new { _ = "", Algorithm = "http://www.w3.org/2001/04/xmlenc#sha256" } },
-                                                    DigestValue = V(certDigest)
-                                                }
-                                            },
-                                            IssuerSerial = new[]
+                                                DigestMethod = new[] { new { _ = "", Algorithm = "http://www.w3.org/2001/04/xmlenc#sha256" } },
+                                                DigestValue = V(certDigest)
+                                            }
+                                        },
+                                        IssuerSerial = new[]
+                                        {
+                                            new
                                             {
-                                                new
-                                                {
-                                                    X509IssuerName = V(issuerName),
-                                                    X509SerialNumber = V(serialDecimal)
-                                                }
+                                                X509IssuerName = V(issuerName),
+                                                X509SerialNumber = V(serialDecimal)
                                             }
                                         }
                                     }
@@ -400,7 +415,8 @@ public static class UblDocumentBuilder
     private static object BuildUblExtensions(
         string sig, string docDigest, string propsDigest,
         string certBase64, string certDigest,
-        string signingTime, string issuerName, string serialDecimal)
+        string signingTime, string issuerName, string serialDecimal,
+        object signedPropsNode)
     {
         return new
         {
@@ -435,7 +451,6 @@ public static class UblDocumentBuilder
                                                             SignatureMethod = new[] { new { _ = "", Algorithm = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" } },
                                                             Reference = new object[]
                                                             {
-                                                                // Reference 1: SignedProperties
                                                                 new
                                                                 {
                                                                     Type = "http://uri.etsi.org/01903/v1.3.2#SignedProperties",
@@ -443,7 +458,6 @@ public static class UblDocumentBuilder
                                                                     DigestMethod = new[] { new { _ = "", Algorithm = "http://www.w3.org/2001/04/xmlenc#sha256" } },
                                                                     DigestValue = V(propsDigest)
                                                                 },
-                                                                // Reference 2: Document
                                                                 new
                                                                 {
                                                                     Type = "",
@@ -486,48 +500,9 @@ public static class UblDocumentBuilder
                                                                 new
                                                                 {
                                                                     Target = "signature",
-                                                                    SignedProperties = new[]
-                                                                    {
-                                                                        new
-                                                                        {
-                                                                            Id = "id-xades-signed-props",
-                                                                            SignedSignatureProperties = new[]
-                                                                            {
-                                                                                new
-                                                                                {
-                                                                                    SigningTime = V(signingTime),
-                                                                                    SigningCertificate = new[]
-                                                                                    {
-                                                                                        new
-                                                                                        {
-                                                                                            Cert = new[]
-                                                                                            {
-                                                                                                new
-                                                                                                {
-                                                                                                    CertDigest = new[]
-                                                                                                    {
-                                                                                                        new
-                                                                                                        {
-                                                                                                            DigestMethod = new[] { new { _ = "", Algorithm = "http://www.w3.org/2001/04/xmlenc#sha256" } },
-                                                                                                            DigestValue = V(certDigest)
-                                                                                                        }
-                                                                                                    },
-                                                                                                    IssuerSerial = new[]
-                                                                                                    {
-                                                                                                        new
-                                                                                                        {
-                                                                                                            X509IssuerName = V(issuerName),
-                                                                                                            X509SerialNumber = V(serialDecimal)
-                                                                                                        }
-                                                                                                    }
-                                                                                                }
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
+                                                                    // Embed the exact same object that was hashed for propsDigest.
+                                                                    // Using a separate object literal would produce a different serialization → DS320.
+                                                                    SignedProperties = signedPropsNode
                                                                 }
                                                             }
                                                         }

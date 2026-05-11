@@ -1,9 +1,9 @@
 # MyInvois-Service: Project Status & Deliverables Summary
 
-**Document Version:** 6.1
-**Date:** April 2, 2026 (Updated — AR Line Items Fix + E2E Pre-Prod Validation)
+**Document Version:** 6.2
+**Date:** May 11, 2026 (Updated — XAdES Signature Fix + First Validated LHDN Pre-Prod Submissions)
 **Prepared For:** Executive Sponsors, Development Team, IT Operations
-**Status:** Phase 1 Active (Extended Go-Live 2026-04-30) | Phase 2 Sprint 6 Complete — SQLite Audit Storage Live
+**Status:** Phase 1 Active | Full E2E pipeline verified — 3 invoices accepted and signature-validated by LHDN pre-prod
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### Phase 1 Active (Extended Go-Live 2026-04-30) 🔄
 
-✅ **MyInvois Submitter** (100%): OAuth token caching ✅ (1-hr TTL, semaphore-locked), exponential backoff retry ✅ (5s→10s→20s), rate limiting ✅ (100 req/min), non-retriable error classification ✅; UBL 2.1 generation ✅ (Sprint 7 item 7.6); XAdES v1.1 document signing ✅ (Sprint 7 item 7.7). Sandbox OAuth validated against `identity.myinvois.hasil.gov.my` ✅. HTTP submission blocked by HASIL Azure AD App Proxy (infrastructure blocker — not code issue).
+✅ **MyInvois Submitter** (100%): OAuth token caching ✅ (1-hr TTL, semaphore-locked), exponential backoff retry ✅ (5s→10s→20s), rate limiting ✅ (100 req/min), non-retriable error classification ✅; UBL 2.1 generation ✅ (Sprint 7 item 7.6); XAdES v1.1 document signing ✅ (Sprint 7 item 7.7, corrected ADR-017 May 2026). **3 AR invoices accepted and Step 08 signature-validated by LHDN pre-prod 2026-05-11.** API URL fixed (preprod-api.myinvois.hasil.gov.my — both token + API). Contact block fixed (real phone, no email placeholder). Correct pre-prod endpoint confirmed per LHDN SDK FAQ.
 ✅ **MOVEX Reader** (100%): DB2 direct access strategy pattern (ADR-013), Dapper ORM, 30s timeout, party enrichment for AR/AP, invoice line item mapping. AR totals recalculated from ODLINE lines (not FSLEDG header).
 ✅ **DirectQueryDataSource** (100%): Full Dapper+ODBC implementation — AP/AR header queries, batch line item fetching. **AR join path (ADR-016):** `FSLEDG → OINVOH (ESVONO=UHVONO) → ODLINE (UHIVNO=UBIVNO)`. 96% coverage (117/122 2026 invoices). LHDN classification code default `"022"` (Others) for all lines.
 ✅ **Schema Mapper** (100%): MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination, line item mapping
@@ -54,7 +54,7 @@
 | **Architecture** | ✅ Complete | 13 ADRs documented, DB2 direct access core design, ADR-013 gap #2 closed | 100% |
 | **Configuration** | ✅ Complete | 7 settings classes with sensible, safe defaults | 100% |
 | **Models/DTOs** | ✅ Complete | 6 DTOs (MovexInvoice, RawInvoiceLineRecord, MyInvoiceDocument, SubmissionResult, ValidationError, BatchResult) | 100% |
-| **MyInvois Submitter** | ✅ Complete | OAuth ✅, retry ✅, rate limiting ✅, UBL 2.1 ✅ (7.6), XAdES signing ✅ (7.7). Sandbox OAuth validated ✅. HTTP submission blocked by HASIL App Proxy (infrastructure, not code) | **100%** |
+| **MyInvois Submitter** | ✅ Complete | OAuth ✅, retry ✅, rate limiting ✅, UBL 2.1 ✅, XAdES signing ✅ (ADR-017). **3 invoices accepted + Step 08 validated by LHDN pre-prod 2026-05-11.** API URL, contact block, signature digest all confirmed correct. | **100%** |
 | **MOVEX Reader** | ✅ Complete | DB2 direct access strategy, Dapper ORM, party enrichment, line item mapping | **100%** |
 | **Schema Mapper** | ✅ Complete | MOVEX → UBL 2.1 transformation, 30+ field mapping, validator coordination | **100%** |
 | **Validators (5)** | ✅ Complete | MandatoryFields, TIN, Date, Currency, Totals covering 20+ constraints | **100%** |
