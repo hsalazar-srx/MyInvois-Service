@@ -34,7 +34,7 @@ public static class UblDocumentBuilder
             D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
             A = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
             B = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions: null) }
+            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions: null, includeSignature: false) }
         };
     }
 
@@ -52,21 +52,20 @@ public static class UblDocumentBuilder
     /// </summary>
     public static object BuildSigned(MyInvoiceDocument doc, X509Certificate2 certificate)
     {
-        // Per LHDN SDK v1.5 signing specification:
+        // Per LHDN SDK v1.5 / signature-creation-json:
         //
-        // Step 1: Build the invoice body WITH the Signature element but WITHOUT UBLExtensions.
-        //         Hash THIS exact serialization for docDigest.
-        //         This is what LHDN will decode from base64 and re-hash for DS322 validation.
+        // Step 1: Build the canonical document — NO UBLExtensions, NO Signature element.
+        //         LHDN strips BOTH before re-hashing for DS322 validation.
         var canonicalEnvelope = new UblEnvelope
         {
             D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
             A = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
             B = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions: null) }
+            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions: null, includeSignature: false) }
         };
         var canonicalJson = Minify(canonicalEnvelope);
 
-        // Step 2 — document digest over canonical bytes
+        // Step 2 — document digest over canonical bytes (no UBLExtensions, no Signature)
         var docHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson));
         var docDigest = Convert.ToBase64String(docHashBytes);
 
@@ -82,34 +81,35 @@ public static class UblDocumentBuilder
         var certDigest = Convert.ToBase64String(certHashBytes);
 
         // Step 5 — signed properties digest.
-        //   Must hash the SignedProperties object EXACTLY as it will appear embedded in UBLExtensions,
-        //   because LHDN re-computes the digest from the embedded node for DS320 validation.
-        //   Build it once, serialize it, hash it, then reuse the same object in UBLExtensions.
+        //   Per LHDN SDK: hash the QualifyingProperties object:
+        //   {"Target":"signature","SignedProperties":[{"Id":"id-xades-signed-props",...}]}
+        //   Build once, hash, embed same object reference in UBLExtensions.
         var signingTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
         var issuerName = certificate.IssuerName.Name ?? string.Empty;
         var serialNumber = certificate.SerialNumber ?? string.Empty;
         var serialDecimal = HexToDecimalString(serialNumber);
 
         var signedPropsNode = BuildSignedPropertiesNode(certDigest, signingTime, issuerName, serialDecimal);
-        var propsJson = Minify(signedPropsNode);
+        var qualifyingPropsNode = new { Target = "signature", SignedProperties = signedPropsNode };
+        var propsJson = Minify(qualifyingPropsNode);
         var propsHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(propsJson));
         var propsDigest = Convert.ToBase64String(propsHashBytes);
 
-        // Step 6 — assemble UBLExtensions using the same signedPropsNode
+        // Step 6 — assemble UBLExtensions, embedding the same signedPropsNode reference
         var certBase64 = Convert.ToBase64String(certDer);
         var ublExtensions = BuildUblExtensions(
             sig, docDigest, propsDigest,
             certBase64, certDigest,
             signingTime, issuerName, serialDecimal, signedPropsNode);
 
-        // Final document: canonical body + UBLExtensions prepended.
-        // The submitted bytes must be: Minify(this) — and LHDN strips UBLExtensions before re-hashing.
+        // Final signed document: invoice body with UBLExtensions + Signature.
+        // LHDN decodes the submitted base64, strips UBLExtensions and Signature, re-hashes → must equal docDigest.
         return new UblEnvelope
         {
             D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
             A = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
             B = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions) }
+            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions, includeSignature: true) }
         };
     }
 
@@ -125,8 +125,12 @@ public static class UblDocumentBuilder
     // Invoice body
     // -----------------------------------------------------------------------
 
-    private static object BuildInvoiceBody(MyInvoiceDocument doc, object? ublExtensions)
+    private static object BuildInvoiceBody(MyInvoiceDocument doc, object? ublExtensions, bool includeSignature = true)
     {
+        // Key order matches LHDN SDK sample: invoice fields → UBLExtensions → Signature.
+        // Dictionary preserves insertion order in .NET; UBLExtensions and Signature are
+        // appended in the correct sequence so that stripping them from the serialized
+        // bytes leaves exactly the canonical form we hashed for docDigest.
         var body = new Dictionary<string, object>
         {
             ["ID"] = V(doc.InvoiceNumber),
@@ -140,18 +144,20 @@ public static class UblDocumentBuilder
             ["TaxTotal"] = new[] { BuildTaxTotal(doc) },
             ["LegalMonetaryTotal"] = new[] { BuildLegalMonetaryTotal(doc) },
             ["InvoiceLine"] = BuildInvoiceLines(doc),
-            ["Signature"] = new[]
+        };
+
+        if (ublExtensions != null)
+            body["UBLExtensions"] = new[] { ublExtensions };
+
+        if (includeSignature)
+            body["Signature"] = new[]
             {
                 new
                 {
                     ID = V("urn:oasis:names:specification:ubl:signature:Invoice"),
                     SignatureMethod = V("urn:oasis:names:specification:ubl:dsig:enveloped:xades")
                 }
-            }
-        };
-
-        if (ublExtensions != null)
-            body["UBLExtensions"] = new[] { ublExtensions };
+            };
 
         return body;
     }
