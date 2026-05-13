@@ -54,63 +54,152 @@ public static class UblDocumentBuilder
     {
         // Per LHDN SDK v1.5 / signature-creation-json:
         //
-        // Step 1: Build the canonical document — NO UBLExtensions, NO Signature element.
-        //         LHDN strips BOTH before re-hashing for DS322 validation.
-        var canonicalEnvelope = new UblEnvelope
+        // DS322 root requirement: docDigest = SHA256(canonical bytes LHDN derives from the submitted doc).
+        // LHDN SDK Step 1: "Removing the sections 'UBLExtensions', and 'Signature' if they do exist.
+        //                   Minify the file by removing new lines and not needed spaces."
+        //
+        // This is a STRING-LEVEL operation on the submitted bytes — not parse+reserialize.
+        // Consequence: LHDN's canonical = submitted_bytes with ,"UBLExtensions":[...] and ,"Signature":[...]
+        //              surgically removed as substrings. Number format is preserved exactly.
+        //
+        // Approach:
+        //   1. Build invoice body dict, add Signature stub (no UBLExtensions yet), minify → signedNoUbl.
+        //      This string ends with: ...InvoiceLine content...,"Signature":[...]}]}
+        //   2. Add placeholder UBLExtensions BETWEEN InvoiceLine and Signature in the dict,
+        //      minify → submittedJson (what LHDN receives, decoded from base64).
+        //   3. String-strip ,"UBLExtensions":[...] and ,"Signature":[...] from submittedJson
+        //      → canonicalJson. This is EXACTLY what LHDN hashes for DS322.
+        //   4. docDigest = SHA256(canonicalJson). Sign canonicalJson → sig.
+        //   5. Build real UBLExtensions with correct docDigest/sig, replace in dict, re-minify → final doc.
+        //
+        // Step 5 is safe: UBLExtensions content changes (digest values change) but UBLExtensions is
+        // stripped for DS322, so the canonical is unaffected. The re-minified final doc has the same
+        // Invoice body bytes → same canonical → same docDigest. ✓
+
+        var certDer = certificate.RawData;
+        var certDigest = Convert.ToBase64String(SHA256.HashData(certDer));
+        var certBase64 = Convert.ToBase64String(certDer);
+        var signingTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        var issuerName = certificate.IssuerName.Name ?? string.Empty;
+        var serialDecimal = HexToDecimalString(certificate.SerialNumber ?? string.Empty);
+
+        // propsDigest: hash the full QualifyingProperties object per LHDN SDK.
+        // Build this first — it's independent of docDigest and must be the SAME object
+        // instance embedded in both the hash and the UBLExtensions (to guarantee identical serialization).
+        var signedPropsNode = BuildSignedPropertiesNode(certDigest, signingTime, issuerName, serialDecimal);
+        var qualifyingPropsNode = new { Target = "signature", SignedProperties = signedPropsNode };
+        var propsDigest = Convert.ToBase64String(
+            SHA256.HashData(Encoding.UTF8.GetBytes(Minify(qualifyingPropsNode))));
+
+        // Build the invoice body dict (no UBLExtensions, no Signature yet).
+        var invoiceBody = BuildInvoiceBodyDict(doc);
+
+        // Add a placeholder UBLExtensions (digest values don't matter — it will be stripped for DS322).
+        // This ensures the submitted doc has UBLExtensions BEFORE Signature, matching LHDN sample order.
+        var placeholderUbl = BuildUblExtensions(
+            sig: string.Empty, docDigest: string.Empty, propsDigest: propsDigest,
+            certBase64: certBase64, certDigest: certDigest,
+            signingTime: signingTime, issuerName: issuerName, serialDecimal: serialDecimal,
+            signedPropsNode: signedPropsNode);
+        invoiceBody["UBLExtensions"] = new[] { placeholderUbl };
+
+        // Add Signature stub.
+        var signatureStub = new[]
+        {
+            new
+            {
+                ID = V("urn:oasis:names:specification:ubl:signature:Invoice"),
+                SignatureMethod = V("urn:oasis:names:specification:ubl:dsig:enveloped:xades")
+            }
+        };
+        invoiceBody["Signature"] = signatureStub;
+
+        // Minify the full envelope — these are the bytes LHDN receives (decoded from base64).
+        var envelope = new UblEnvelope
         {
             D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
             A = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
             B = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions: null, includeSignature: false) }
+            Invoice = new object[] { invoiceBody }
         };
-        var canonicalJson = Minify(canonicalEnvelope);
+        var submittedJson = Minify(envelope);
 
-        // Step 2 — document digest over canonical bytes (no UBLExtensions, no Signature)
+        // String-strip ,"UBLExtensions":[...] and ,"Signature":[...] — exactly what LHDN does.
+        var canonicalJson = StripJsonKeysFromMinified(submittedJson, "UBLExtensions", "Signature");
+
+        // docDigest and RSA signature over the canonical bytes.
         var docHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson));
         var docDigest = Convert.ToBase64String(docHashBytes);
 
-        // Step 3 — sign the canonical bytes with RSA-SHA256
         using var rsa = certificate.GetRSAPrivateKey()
             ?? throw new InvalidOperationException("Certificate does not contain an RSA private key.");
-        var sigBytes = rsa.SignData(Encoding.UTF8.GetBytes(canonicalJson), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var sig = Convert.ToBase64String(sigBytes);
+        var sig = Convert.ToBase64String(
+            rsa.SignData(Encoding.UTF8.GetBytes(canonicalJson), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
 
-        // Step 4 — certificate digest (SHA-256 of DER-encoded cert)
-        var certDer = certificate.RawData;
-        var certHashBytes = SHA256.HashData(certDer);
-        var certDigest = Convert.ToBase64String(certHashBytes);
-
-        // Step 5 — signed properties digest.
-        //   Per LHDN SDK: hash the QualifyingProperties object:
-        //   {"Target":"signature","SignedProperties":[{"Id":"id-xades-signed-props",...}]}
-        //   Build once, hash, embed same object reference in UBLExtensions.
-        var signingTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
-        var issuerName = certificate.IssuerName.Name ?? string.Empty;
-        var serialNumber = certificate.SerialNumber ?? string.Empty;
-        var serialDecimal = HexToDecimalString(serialNumber);
-
-        var signedPropsNode = BuildSignedPropertiesNode(certDigest, signingTime, issuerName, serialDecimal);
-        var qualifyingPropsNode = new { Target = "signature", SignedProperties = signedPropsNode };
-        var propsJson = Minify(qualifyingPropsNode);
-        var propsHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(propsJson));
-        var propsDigest = Convert.ToBase64String(propsHashBytes);
-
-        // Step 6 — assemble UBLExtensions, embedding the same signedPropsNode reference
-        var certBase64 = Convert.ToBase64String(certDer);
-        var ublExtensions = BuildUblExtensions(
+        // Replace UBLExtensions in the dict with the real one containing correct digests.
+        // Signature stays unchanged — it's stripped for DS322 and doesn't contain digest values.
+        var realUbl = BuildUblExtensions(
             sig, docDigest, propsDigest,
-            certBase64, certDigest,
-            signingTime, issuerName, serialDecimal, signedPropsNode);
+            certBase64, certDigest, signingTime, issuerName, serialDecimal, signedPropsNode);
+        invoiceBody["UBLExtensions"] = new[] { realUbl };
 
-        // Final signed document: invoice body with UBLExtensions + Signature.
-        // LHDN decodes the submitted base64, strips UBLExtensions and Signature, re-hashes → must equal docDigest.
-        return new UblEnvelope
+        // Return the envelope — invoiceBody now has real UBLExtensions + Signature.
+        return envelope;
+    }
+
+    /// <summary>
+    /// Remove top-level keys from Invoice[0] in a minified JSON string using string surgery.
+    /// Mirrors LHDN SDK Step 1: "Removing the sections 'UBLExtensions', and 'Signature' if they
+    /// do exist. Minify the file by removing new lines and not needed spaces."
+    ///
+    /// String-level removal preserves the exact number format (trailing zeros, precision) of the
+    /// submitted bytes — critical for DS322 because LHDN hashes the stripped submitted bytes,
+    /// not a re-serialized form.
+    /// </summary>
+    private static string StripJsonKeysFromMinified(string minifiedJson, params string[] keysToRemove)
+    {
+        var result = minifiedJson;
+        foreach (var key in keysToRemove)
         {
-            D = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
-            A = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
-            B = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            Invoice = new[] { BuildInvoiceBody(doc, ublExtensions, includeSignature: true) }
-        };
+            var keyToken = $",\"{key}\":";
+            var keyPos = result.IndexOf(keyToken, StringComparison.Ordinal);
+            if (keyPos < 0) continue;
+
+            // Find the start of the value (the '[' or '{' that follows the colon)
+            var valueStart = keyPos + keyToken.Length;
+            var blockEnd = FindJsonBlockEnd(result, valueStart);
+            if (blockEnd < 0) continue;
+
+            // Remove ,"key":[...block...]
+            result = result[..keyPos] + result[(blockEnd + 1)..];
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Find the closing bracket/brace that matches the opening bracket/brace at <paramref name="start"/>.
+    /// </summary>
+    private static int FindJsonBlockEnd(string json, int start)
+    {
+        if (start >= json.Length) return -1;
+        var open = json[start];
+        var close = open == '[' ? ']' : '}';
+        var depth = 0;
+        var inString = false;
+        for (var i = start; i < json.Length; i++)
+        {
+            var c = json[i];
+            if (inString)
+            {
+                if (c == '\\') { i++; continue; } // skip escaped char
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') { inString = true; continue; }
+            if (c == open) depth++;
+            else if (c == close) { if (--depth == 0) return i; }
+        }
+        return -1;
     }
 
     /// <summary>
@@ -125,13 +214,14 @@ public static class UblDocumentBuilder
     // Invoice body
     // -----------------------------------------------------------------------
 
-    private static object BuildInvoiceBody(MyInvoiceDocument doc, object? ublExtensions, bool includeSignature = true)
+    /// <summary>
+    /// Build the invoice body fields as a mutable Dictionary — no UBLExtensions, no Signature.
+    /// Used by BuildSigned so UBLExtensions and Signature can be appended to the exact same
+    /// object after the canonical hash is computed, guaranteeing byte-identical serialization.
+    /// </summary>
+    private static Dictionary<string, object> BuildInvoiceBodyDict(MyInvoiceDocument doc)
     {
-        // Key order matches LHDN SDK sample: invoice fields → UBLExtensions → Signature.
-        // Dictionary preserves insertion order in .NET; UBLExtensions and Signature are
-        // appended in the correct sequence so that stripping them from the serialized
-        // bytes leaves exactly the canonical form we hashed for docDigest.
-        var body = new Dictionary<string, object>
+        return new Dictionary<string, object>
         {
             ["ID"] = V(doc.InvoiceNumber),
             ["IssueDate"] = V(doc.IssueDate),
@@ -145,6 +235,11 @@ public static class UblDocumentBuilder
             ["LegalMonetaryTotal"] = new[] { BuildLegalMonetaryTotal(doc) },
             ["InvoiceLine"] = BuildInvoiceLines(doc),
         };
+    }
+
+    private static object BuildInvoiceBody(MyInvoiceDocument doc, object? ublExtensions, bool includeSignature = true)
+    {
+        var body = BuildInvoiceBodyDict(doc);
 
         if (ublExtensions != null)
             body["UBLExtensions"] = new[] { ublExtensions };

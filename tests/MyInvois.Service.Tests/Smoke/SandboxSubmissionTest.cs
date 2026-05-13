@@ -340,7 +340,270 @@ public class SandboxSubmissionTest
         _output.WriteLine($"✅ All {results.Count} invoices submitted successfully to LHDN pre-prod.");
     }
 
+    /// <summary>
+    /// LHDN Diagnostic Submission — captures every artifact LHDN support requested:
+    ///   1. Original submitted document (decoded JSON from base64)
+    ///   2. Submission payload (full request body)
+    ///   3. Response payload (full response body)
+    ///   4. UUID + SubmissionUID
+    ///   5. Access token JSON
+    ///
+    /// All artifacts written to: tests/lhdn-diagnostic/YYYYMMDD-HHmmss/
+    /// Run: dotnet test --filter "Category=Sandbox&FullyQualifiedName~LhdnDiagnostic" --logger "console;verbosity=detailed"
+    /// </summary>
+    [Fact(DisplayName = "LHDN Diagnostic: Capture all submission artifacts for support")]
+    public async Task LhdnDiagnostic_CaptureSubmissionArtifacts()
+    {
+        var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var outputDir = Path.Combine(
+            Directory.GetCurrentDirectory(), "..", "..", "..", "..", "lhdn-diagnostic", timestamp);
+        Directory.CreateDirectory(outputDir);
+
+        _output.WriteLine("=== LHDN DIAGNOSTIC SUBMISSION ===");
+        _output.WriteLine($"Artifacts will be written to: {Path.GetFullPath(outputDir)}");
+        _output.WriteLine("");
+
+        var apiSettings = GetApiSettings();
+        VerifyCredentials(apiSettings);
+
+        var movexDbSettings = _configuration.GetSection("MovexDb").Get<MovexDbSettings>()
+            ?? throw new InvalidOperationException("MovexDb configuration missing");
+        var companySettings = _configuration.GetSection("Companies").Get<Dictionary<string, CompanyDetails>>()
+            ?? throw new InvalidOperationException("Companies configuration missing");
+
+        // --- Capture handler intercepts all HTTP traffic ---
+        var captureHandler = new CapturingHttpMessageHandler();
+
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddHttpClient("MyInvois")
+            .ConfigurePrimaryHttpMessageHandler(() => captureHandler);
+        services.AddHttpClient();
+        var httpClientFactory = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
+
+        // --- Step 1: Get access token ---
+        _output.WriteLine("--- Step 1: Acquiring OAuth token ---");
+        var submitter = new MyInvoiceSubmitter(
+            httpClientFactory,
+            Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
+
+        captureHandler.Label = "token";
+        var token = await submitter.GetAccessToken(CancellationToken.None);
+        _output.WriteLine($"   Token acquired: {token[..20]}...");
+
+        // Write token JSON response
+        if (captureHandler.LastResponseBody != null)
+        {
+            var tokenPath = Path.Combine(outputDir, "01-token-response.json");
+            await File.WriteAllTextAsync(tokenPath, PrettyPrint(captureHandler.LastResponseBody));
+            _output.WriteLine($"   ✅ Token response → {Path.GetFileName(tokenPath)}");
+        }
+
+        // --- Step 2: Fetch invoice from MOVEX ---
+        _output.WriteLine("");
+        _output.WriteLine("--- Step 2: Fetching AR invoice from MOVEX ---");
+        var dataSource = new DirectQueryDataSource(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+        var partyProvider = new MovexMasterPartyDataProvider(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
+        var reader = new MovexInvoiceReader(
+            dataSource, partyProvider,
+            Options.Create(_configuration.GetSection("ForeignPartyDefaults").Get<ForeignPartyDefaultsSettings>()
+                ?? new ForeignPartyDefaultsSettings()),
+            new LoggerFactory().CreateLogger<MovexInvoiceReader>());
+
+        var invoices = await reader.GetInvoicesByDateRange(
+            DateTime.UtcNow.AddMonths(-3), DateTime.UtcNow, CancellationToken.None);
+        var arInvoices = invoices.Where(i => i.InvoiceType == "Sales" && i.Lines.Count > 0).ToList();
+        arInvoices.Count.Should().BeGreaterThan(0, "Need at least one AR invoice with lines");
+
+        var invoice = arInvoices.First();
+        _output.WriteLine($"   Selected invoice: {invoice.InvoiceNumber} ({invoice.Lines.Count} lines)");
+
+        // --- Step 3: Map and sign ---
+        _output.WriteLine("");
+        _output.WriteLine("--- Step 3: Mapping and signing ---");
+        var memoryCache = new Microsoft.Extensions.Caching.Memory.MemoryCache(
+            new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        var tinValidator = new TINValidator(memoryCache, httpClientFactory,
+            Options.Create(apiSettings), new LoggerFactory().CreateLogger<TINValidator>());
+        var mapper = new MyInvoisMapper(
+            new MandatoryFieldsValidator(), tinValidator, new DateValidator(),
+            new CurrencyValidator(), new TotalsValidator(),
+            Options.Create(new CompanySettings { Companies = companySettings }),
+            new LoggerFactory().CreateLogger<MyInvoisMapper>());
+
+        var myInvoiceDoc = mapper.Transform(invoice);
+        myInvoiceDoc.ValidationErrors.Should().BeEmpty("invoice must pass validation");
+        _output.WriteLine($"   ✅ Validation passed");
+
+        // Build signed UBL and capture the raw document JSON
+        var certificate = new System.Security.Cryptography.X509Certificates.X509Certificate2(
+            apiSettings.CertificatePath, apiSettings.CertificatePassword,
+            System.Security.Cryptography.X509Certificates.X509KeyStorageFlags.Exportable);
+
+        var signedDoc = UblDocumentBuilder.BuildSigned(myInvoiceDoc, certificate);
+        var signedJsonMinified = UblDocumentBuilder.Minify(signedDoc);
+
+        // Artifact 1: original submitted document (the decoded JSON LHDN receives)
+        var docPath = Path.Combine(outputDir, "02-submitted-document.json");
+        await File.WriteAllTextAsync(docPath, PrettyPrint(signedJsonMinified));
+        _output.WriteLine($"   ✅ Signed document → {Path.GetFileName(docPath)}");
+
+        // Build submission payload (what we POST to /documentsubmissions)
+        var hashBytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(signedJsonMinified));
+        var documentHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
+        var documentBase64 = Convert.ToBase64String(
+            System.Text.Encoding.UTF8.GetBytes(signedJsonMinified));
+
+        var submissionPayload = new
+        {
+            documents = new[]
+            {
+                new
+                {
+                    format = "JSON",
+                    documentHash,
+                    codeNumber = myInvoiceDoc.InvoiceNumber,
+                    document = documentBase64
+                }
+            }
+        };
+        var submissionPayloadJson = System.Text.Json.JsonSerializer.Serialize(
+            submissionPayload, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+
+        // Artifact 2: submission payload (request body)
+        var payloadPath = Path.Combine(outputDir, "03-submission-payload.json");
+        await File.WriteAllTextAsync(payloadPath, submissionPayloadJson);
+        _output.WriteLine($"   ✅ Submission payload → {Path.GetFileName(payloadPath)}");
+
+        // --- Step 4: Submit and capture response ---
+        _output.WriteLine("");
+        _output.WriteLine("--- Step 4: Submitting to LHDN pre-prod ---");
+        captureHandler.Label = "submission";
+        var result = await submitter.Submit(myInvoiceDoc, CancellationToken.None);
+
+        _output.WriteLine($"   Status: {result.Status}");
+        _output.WriteLine($"   UUID: {result.MyInvoisUUID}");
+
+        // Artifact 3: full response body
+        var responsePath = Path.Combine(outputDir, "04-submission-response.json");
+        var responseBody = captureHandler.LastResponseBody ?? result.RawResponse ?? "{}";
+        await File.WriteAllTextAsync(responsePath, PrettyPrint(responseBody));
+        _output.WriteLine($"   ✅ Response payload → {Path.GetFileName(responsePath)}");
+
+        // Artifact 4: summary with UUID + SubmissionUID
+        var summaryLines = new System.Text.StringBuilder();
+        summaryLines.AppendLine("=== LHDN DIAGNOSTIC SUMMARY ===");
+        summaryLines.AppendLine($"Generated:       {DateTime.Now:yyyy-MM-dd HH:mm:ss} (local)");
+        summaryLines.AppendLine($"Environment:     {apiSettings.Environment}");
+        summaryLines.AppendLine($"Endpoint:        {apiSettings.BaseUrl}");
+        summaryLines.AppendLine($"Invoice:         {myInvoiceDoc.InvoiceNumber}");
+        summaryLines.AppendLine($"SupplierTIN:     {myInvoiceDoc.SupplierTIN}");
+        summaryLines.AppendLine($"ClientId:        {apiSettings.ClientId}");
+        summaryLines.AppendLine($"Certificate:     {Path.GetFileName(apiSettings.CertificatePath)}");
+        summaryLines.AppendLine($"Cert thumbprint: {certificate.Thumbprint}");
+        summaryLines.AppendLine($"Cert valid:      {certificate.NotBefore:yyyy-MM-dd} → {certificate.NotAfter:yyyy-MM-dd}");
+        summaryLines.AppendLine("");
+        summaryLines.AppendLine($"Submission status:    {result.Status}");
+        summaryLines.AppendLine($"Document UUID:        {result.MyInvoisUUID}");
+        summaryLines.AppendLine($"Submission UID:       {ExtractSubmissionUid(responseBody)}");
+        summaryLines.AppendLine($"Duration:             {result.DurationMs}ms");
+        if (!string.IsNullOrEmpty(result.ErrorCode))
+        {
+            summaryLines.AppendLine($"Error code:           {result.ErrorCode}");
+            summaryLines.AppendLine($"Error message:        {result.ErrorMessage}");
+        }
+        summaryLines.AppendLine("");
+        summaryLines.AppendLine("=== FILES FOR LHDN SUPPORT ===");
+        summaryLines.AppendLine($"01-token-response.json       — Access token JSON");
+        summaryLines.AppendLine($"02-submitted-document.json   — Original submitted document (decoded from base64)");
+        summaryLines.AppendLine($"03-submission-payload.json   — Submission payload (POST request body)");
+        summaryLines.AppendLine($"04-submission-response.json  — Response payload");
+        summaryLines.AppendLine($"05-summary.txt               — This file (UUID, SubmissionUID, metadata)");
+
+        var summaryPath = Path.Combine(outputDir, "05-summary.txt");
+        await File.WriteAllTextAsync(summaryPath, summaryLines.ToString());
+
+        // Print everything to test output too
+        _output.WriteLine("");
+        _output.WriteLine(summaryLines.ToString());
+        _output.WriteLine($"=== ALL FILES WRITTEN TO: {Path.GetFullPath(outputDir)} ===");
+
+        // Soft assert — if submission itself failed, still write files but report it
+        if (result.Status != "Success")
+            _output.WriteLine($"⚠️  Submission returned non-Success status. Check 04-submission-response.json for details.");
+
+        result.Status.Should().Be("Success",
+            $"Diagnostic submission must succeed. Error: {result.ErrorCode} — {result.ErrorMessage}");
+    }
+
     #region Helpers
+
+    private static string PrettyPrint(string json)
+    {
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(json);
+            return System.Text.Json.JsonSerializer.Serialize(
+                doc, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return json;
+        }
+    }
+
+    private static string ExtractSubmissionUid(string responseJson)
+    {
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(responseJson);
+            if (doc.RootElement.TryGetProperty("submissionUid", out var uid))
+                return uid.GetString() ?? "not found";
+            if (doc.RootElement.TryGetProperty("SubmissionUID", out var uid2))
+                return uid2.GetString() ?? "not found";
+        }
+        catch { }
+        return "not found";
+    }
+
+    /// <summary>
+    /// Captures raw request and response bodies from all HTTP calls made through it.
+    /// Implemented as DelegatingHandler so it chains on top of the real HttpClientHandler.
+    /// </summary>
+    private sealed class CapturingHttpMessageHandler : DelegatingHandler
+    {
+        public string Label { get; set; } = "";
+        public string? LastResponseBody { get; private set; }
+        public string? LastRequestBody { get; private set; }
+
+        public CapturingHttpMessageHandler() : base(new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+        }) { }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Content != null)
+                LastRequestBody = await request.Content.ReadAsStringAsync(cancellationToken);
+
+            var response = await base.SendAsync(request, cancellationToken);
+
+            // Buffer the response so it can be read twice (once here, once by caller)
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            LastResponseBody = System.Text.Encoding.UTF8.GetString(bytes);
+            response.Content = new System.Net.Http.ByteArrayContent(bytes);
+            response.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            return response;
+        }
+    }
 
     private MyInvoisApiSettings GetApiSettings()
     {
