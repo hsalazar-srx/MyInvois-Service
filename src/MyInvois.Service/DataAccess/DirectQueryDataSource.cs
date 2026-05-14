@@ -51,7 +51,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
         // BUG FIX (Sprint 7): was BETWEEN ? AND ? but only 1 param supplied — changed to >= ? (no upper bound for "pending")
-        var apWhere = "p.epacdt >= ? AND p.eptrcd = 50 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";// AND p.eptrcd = 10";
+        // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 (FX revaluations) — corrected to 10 (supplier invoices)
+        // Country filter (idcscd <> 'MY') pending clarification: may need to include domestic suppliers — see Finance email thread
+        var apWhere = "p.epacdt >= ? AND p.eptrcd = 10 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
        //var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
         var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
@@ -87,7 +89,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
             if (invoiceType == "AP")
             {
-                var sql = BuildApHeaderSql(schema, "TRIM(p.epsino) = ?");// AND p.eptrcd = 10");
+                var sql = BuildApHeaderSql(schema, "TRIM(p.epsino) = ? AND p.eptrcd = 10");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
 
@@ -389,6 +391,13 @@ public class DirectQueryDataSource : IInvoiceDataSource
         LEFT JOIN {schema}.MPLINE po
             ON li.F5CONO = po.IBCONO AND li.F5PUNO = po.IBPUNO AND li.F5PNLI = po.IBPNLI
         LEFT JOIN LATERAL (
+            -- F9CUAM is a general-purpose amount column covering goods cost, VAT, and charges.
+            -- F9VTCD <> '' isolates tax-code-bearing rows, but for zero-rated foreign supplier
+            -- invoices MOVEX may post a non-blank F9VTCD against the goods cost row, causing
+            -- net amount to be summed as tax. F9INIT = 2 (VAT entry type) would tighten this,
+            -- but the exact F9INIT values must be confirmed against live data before changing.
+            -- Run FGINLI_FGINAE_AP_LineItems_Validation.sql (Query 0h) to investigate.
+            -- For zero-rated foreign supplier invoices TaxAmount = 0 is correct.
             SELECT SUM(ae.F9CUAM) AS VatAmount
             FROM {schema}.FGINAE ae
             WHERE ae.F9CONO = li.F5CONO

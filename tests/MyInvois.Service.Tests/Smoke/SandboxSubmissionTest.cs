@@ -340,6 +340,155 @@ public class SandboxSubmissionTest
         _output.WriteLine($"✅ All {results.Count} invoices submitted successfully to LHDN pre-prod.");
     }
 
+    [Fact(DisplayName = "Sandbox: AP (Purchase) — fetch from DB2, sign as self-billed type 11, submit to pre-prod")]
+    public async Task Sandbox_AP_FetchSignSubmit()
+    {
+        _output.WriteLine("=== AP PURCHASE INVOICE SUBMISSION TEST ===");
+        _output.WriteLine($"Execution Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        _output.WriteLine("");
+
+        var movexDbSettings = _configuration.GetSection("MovexDb").Get<MovexDbSettings>()
+            ?? throw new InvalidOperationException("MovexDb configuration missing");
+        var apiSettings = GetApiSettings();
+        VerifyCredentials(apiSettings);
+        var companySettings = _configuration.GetSection("Companies").Get<Dictionary<string, CompanyDetails>>()
+            ?? throw new InvalidOperationException("Companies configuration missing");
+
+        var dataSource = new DirectQueryDataSource(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+        var partyProvider = new MovexMasterPartyDataProvider(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
+        var reader = new MovexInvoiceReader(
+            dataSource, partyProvider,
+            Options.Create(_configuration.GetSection("ForeignPartyDefaults").Get<ForeignPartyDefaultsSettings>()
+                ?? new ForeignPartyDefaultsSettings()),
+            new LoggerFactory().CreateLogger<MovexInvoiceReader>());
+
+        var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var httpClientFactory = CreateRealHttpClientFactory();
+        var tinValidator = new TINValidator(memoryCache, httpClientFactory,
+            Options.Create(apiSettings), new LoggerFactory().CreateLogger<TINValidator>());
+        var mapper = new MyInvoisMapper(
+            new MandatoryFieldsValidator(), tinValidator, new DateValidator(),
+            new CurrencyValidator(), new TotalsValidator(),
+            Options.Create(new CompanySettings { Companies = companySettings }),
+            new LoggerFactory().CreateLogger<MyInvoisMapper>());
+        var submitter = new MyInvoiceSubmitter(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
+
+        // Step 1 — Fetch and filter to AP only
+        _output.WriteLine("--- Step 1: Fetching AP invoices from MOVEX DB2 ---");
+        var fromDate = DateTime.UtcNow.AddMonths(-3);
+        var enriched = await reader.GetInvoicesByDateRange(fromDate, DateTime.UtcNow, CancellationToken.None);
+
+        var apWithLines = enriched.Where(i => i.InvoiceType == "Purchase" && i.Lines.Count > 0).ToList();
+        _output.WriteLine($"   Total enriched:          {enriched.Count}");
+        _output.WriteLine($"   AP (Purchase) with lines: {apWithLines.Count}");
+
+        apWithLines.Should().NotBeEmpty(
+            "MOVEX should contain AP (Purchase) invoices with lines for the last 3 months. " +
+            "Check: (1) eptrcd=10 in AP WHERE clause, (2) foreign supplier data exists, (3) FGINLI line item join.");
+
+        // Step 2 — Inspect first few AP invoices before submitting
+        _output.WriteLine("");
+        _output.WriteLine("--- Step 2: AP invoice inspection ---");
+        foreach (var inv in apWithLines.Take(5))
+        {
+            _output.WriteLine($"   Invoice: {inv.InvoiceNumber}  Supplier: {inv.Supplier?.Name ?? "?"}  " +
+                              $"Lines: {inv.Lines.Count}  Amount: {inv.TotalInclTax:F2} {inv.CurrencyCode}");
+        }
+
+        // Step 3 — Map, validate and submit up to 2 AP invoices
+        _output.WriteLine("");
+        _output.WriteLine("--- Step 3: Map → Validate → Submit (max 2 AP invoices) ---");
+        var results = new List<(string InvoiceNo, string Status, string Detail)>();
+        var submitted = 0;
+
+        foreach (var invoice in apWithLines)
+        {
+            if (submitted >= 2) break;
+
+            _output.WriteLine($"\n   Invoice: {invoice.InvoiceNumber}");
+
+            try
+            {
+                var doc = mapper.Transform(invoice);
+
+                // Diagnostic: show what the mapper produced
+                _output.WriteLine($"   TypeCode:     {doc.DocumentTypeCode}  (expected: 11 for self-billed)");
+                _output.WriteLine($"   SupplierTIN:  {doc.SupplierTIN}  (foreign supplier)");
+                _output.WriteLine($"   BuyerTIN:     {doc.BuyerTIN}   (our company — matches OAuth token)");
+                _output.WriteLine($"   Currency:     {doc.CurrencyCode}");
+                _output.WriteLine($"   TotalExclTax: {doc.TotalExclTax:F2}");
+                _output.WriteLine($"   TotalTax:     {doc.TotalTax:F2}");
+                _output.WriteLine($"   TotalInclTax: {doc.TotalInclTax:F2}");
+                _output.WriteLine($"   Lines:        {doc.Lines.Count}");
+                foreach (var line in doc.Lines.Take(3))
+                    _output.WriteLine($"     Line {line.LineNumber}: {line.Description[..Math.Min(line.Description.Length, 40)]}  " +
+                                      $"qty={line.Quantity}  price={line.UnitPrice}  total={line.LineTotalExclTax}");
+
+                var isValid = mapper.ValidateDocument(doc, out var errors);
+                if (!isValid)
+                {
+                    var summary = string.Join("; ", errors.Select(e => e.Message).Take(5));
+                    _output.WriteLine($"   ❌ Validation failed: {summary}");
+                    results.Add((invoice.InvoiceNumber, "ValidationFailed", summary));
+                    continue;
+                }
+                _output.WriteLine("   ✅ Validation passed");
+
+                doc.DocumentTypeCode.Should().Be("11",
+                    "AP invoices must be self-billed (type 11) per LHDN SDK v1.5");
+
+                submitted++;
+                var result = await submitter.Submit(doc, CancellationToken.None);
+                _output.WriteLine($"   Status:   {result.Status}");
+                _output.WriteLine($"   Duration: {result.DurationMs}ms");
+
+                if (result.Status == "Success")
+                {
+                    _output.WriteLine($"   ✅ UUID: {result.MyInvoisUUID}");
+                    _output.WriteLine("   ⏳ Portal Step 08 runs in ~2-5 min — check LHDN portal for Valid/Invalid");
+                    results.Add((invoice.InvoiceNumber, "Success", $"UUID: {result.MyInvoisUUID}"));
+                }
+                else
+                {
+                    _output.WriteLine($"   ❌ {result.ErrorCode}: {result.ErrorMessage}");
+                    _output.WriteLine($"   Raw: {result.RawResponse}");
+                    results.Add((invoice.InvoiceNumber, result.ErrorCode ?? "Failed", result.ErrorMessage ?? "Unknown"));
+                }
+            }
+            catch (Exception ex)
+            {
+                _output.WriteLine($"   💥 Exception: {ex.Message}");
+                results.Add((invoice.InvoiceNumber, "Exception", ex.Message));
+            }
+        }
+
+        // Step 4 — Summary
+        _output.WriteLine("");
+        _output.WriteLine("=== AP SUBMISSION RESULTS ===");
+        _output.WriteLine($"| {"Invoice",-25} | {"Status",-20} | Detail |");
+        _output.WriteLine($"|{new string('-', 27)}|{new string('-', 22)}|--------|");
+        foreach (var (no, status, detail) in results)
+            _output.WriteLine($"| {no,-25} | {status,-20} | {detail} |");
+
+        _output.WriteLine("");
+        _output.WriteLine($"Submitted:           {submitted}");
+        _output.WriteLine($"Validation failures: {results.Count(r => r.Status == "ValidationFailed")}");
+        _output.WriteLine($"Submission failures: {results.Count(r => r.Status != "Success" && r.Status != "ValidationFailed")}");
+        _output.WriteLine("=== END AP TEST ===");
+
+        results.Should().NotBeEmpty("At least one AP invoice should have been processed");
+
+        var validationFails = results.Where(r => r.Status == "ValidationFailed").ToList();
+        validationFails.Should().BeEmpty(
+            $"AP invoices should pass validation. Failures: {string.Join(", ", validationFails.Select(r => $"{r.InvoiceNo}: {r.Detail}"))}");
+    }
+
     /// <summary>
     /// LHDN Diagnostic Submission — captures every artifact LHDN support requested:
     ///   1. Original submitted document (decoded JSON from base64)
