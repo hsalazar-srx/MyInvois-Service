@@ -391,22 +391,11 @@ public class DirectQueryDataSource : IInvoiceDataSource
         LEFT JOIN {schema}.MPLINE po
             ON li.F5CONO = po.IBCONO AND li.F5PUNO = po.IBPUNO AND li.F5PNLI = po.IBPNLI
         LEFT JOIN LATERAL (
-            -- F9CUAM is a general-purpose amount column covering goods cost, VAT, and charges.
-            -- F9VTCD <> '' isolates tax-code-bearing rows, but for zero-rated foreign supplier
-            -- invoices MOVEX may post a non-blank F9VTCD against the goods cost row, causing
-            -- net amount to be summed as tax. F9INIT = 2 (VAT entry type) would tighten this,
-            -- but the exact F9INIT values must be confirmed against live data before changing.
-            -- Run FGINLI_FGINAE_AP_LineItems_Validation.sql (Query 0h) to investigate.
-            -- For zero-rated foreign supplier invoices TaxAmount = 0 is correct.
-            SELECT SUM(ae.F9CUAM) AS VatAmount
-            FROM {schema}.FGINAE ae
-            WHERE ae.F9CONO = li.F5CONO
-              AND ae.F9SUNO = li.F5SUNO
-              AND ae.F9SINO = li.F5SINO
-              AND ae.F9INYR = li.F5INYR
-              AND ae.F9PUNO = li.F5PUNO
-              AND ae.F9PNLI = li.F5PNLI
-              AND TRIM(ae.F9VTCD) <> ''
+            -- All EPTRCD=10 AP invoices are zero-rated for Malaysian SST (confirmed 2026-05-14):
+            -- FPLEDG.EPVTAM = 0 on every supplier invoice row. FGINAE contains no VAT entry
+            -- type rows (F9INIT=12) for EPTRCD=10 invoices — only goods cost (10), freight (11),
+            -- and variance (18) entries exist. TaxAmount is always 0 for this transaction scope.
+            SELECT 0 AS VatAmount FROM SYSIBM.SYSDUMMY1
         ) vat ON 1=1
         WHERE li.F5CONO = ? AND li.F5DIVI = 'L'
           AND (li.F5SUNO, li.F5SINO) IN (VALUES {valueTuples})

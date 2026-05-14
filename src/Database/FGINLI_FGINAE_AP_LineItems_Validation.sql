@@ -194,7 +194,12 @@ FROM MVXCDTA.FGINHC
 WHERE F7CONO = 100 AND TRIM(F7SUNO) = 'SS015' AND TRIM(F7SINO) = '2405NV2600190';
 
 -- Query 0j: Find AP invoices that ACTUALLY have VAT (EPVTAM > 0)
--- If none exist, Malaysian AP purchases may all be zero-rated
+-- CONFIRMED 2026-05-14: EPTRCD=10 (supplier invoices) returns zero rows with EPVTAM > 0.
+-- All standard AP purchases at Scanfil APAC are zero-rated for Malaysian SST.
+-- EPTRCD=40 (adjustments) does return rows with EPVTAM > 0, but FGINAE contains
+-- no rows for those invoices — they are posted outside the FGINLI/FGINAE structure.
+-- CONCLUSION: TaxAmount = 0 for all EPTRCD=10 AP lines. The FGINAE lateral join
+-- has been removed from BuildApLineItemsSql and replaced with a hardcoded 0.
 SELECT
     TRIM(EPSUNO) AS Supplier,
     TRIM(EPSINO) AS InvoiceNo,
