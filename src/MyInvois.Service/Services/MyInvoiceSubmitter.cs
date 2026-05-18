@@ -133,8 +133,12 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
                 result.RawResponse = content;
                 var submissionResponse = JsonSerializer.Deserialize<MyInvoisSubmissionResponse>(content);
 
-                // LHDN returns HTTP 200 even when individual documents are rejected.
-                // Must check rejectedDocuments to determine true outcome.
+                // LHDN Step 07 (synchronous) returns HTTP 200 even when documents are rejected.
+                // rejectedDocuments[] is non-empty only for Step 07 failures: XAdES signature
+                // errors (DS301, DS322) and duplicate invoiceCodeNumber (DS302/DUP001).
+                // Field-level errors (invalid TIN, bad currency, date constraints) are Step 08
+                // (async, 2-5 min after HTTP 200) and appear only via GetSubmissionStatus().
+                // An empty rejectedDocuments[] + HTTP 200 = Step 07 accepted; poll Step 08 for final verdict.
                 var rejected = submissionResponse?.RejectedDocuments?.FirstOrDefault(
                     d => d.InvoiceCodeNumber == document.InvoiceNumber);
                 var accepted = submissionResponse?.AcceptedDocuments?.FirstOrDefault(
