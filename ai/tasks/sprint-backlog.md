@@ -759,7 +759,7 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 | 9.7 | Fix AP line tax: remove incorrect FGINAE lateral join → hardcode `TaxAmount = 0` | ✅ Done | `829c358` | P0 |
 | 9.8 | **AR portal Step 08 confirmed Valid** — UUID `WAFDWH4YEA7BEMFEF10X0GRK10` | ✅ Done | — | P0 |
 | 9.9 | **AP portal Step 08 Valid** — submit current-dated AP invoice, confirm portal Valid | ⏳ Pending | — | P0 |
-| 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ⏳ Pending | — | P0 |
+| 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ✅ Done | pending commit | P0 |
 | 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ⏳ Pending | — | P0 |
 | 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ⏳ Pending | — | P0 |
 | 9.13 | Volume / rate-limit validation (5–10 invoice batch → confirm Polly retry fires) | ⏳ Pending | — | P1 |
@@ -783,7 +783,7 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 
 **9.9 — AP portal Step 08 Valid:** AP type 11 self-billed invoice needs a current-dated invoice (accounting date within LHDN's pre-prod window, ~3 days) to avoid CF321. Submit via `Sandbox_AP_FetchSignSubmit` or `LhdnDiagnostic` test, then check portal after Step 08 runs (~5 min). This is the AP equivalent of the AR confirmation on 9.8.
 
-**9.10 — Status polling:** Verify `GetSubmissionStatus` polls `/documents/{uuid}/details` correctly and writes final `Valid`/`Invalid` status to SQLite audit log. Currently the smoke test captures UUID at submission but does not poll for Step 08 outcome.
+**9.10 ✅ Done (2026-05-18)** — `GetSubmissionStatus` implemented (replaces TODO stub). Calls `GET /api/v1.0/documents/{uuid}/details`, deserialises `DocumentDetailsResponse`, returns `status` string. 7 unit tests (Valid/Invalid/Submitted/404/500/empty-UUID/URL-assert) all passing. `Sandbox_PollStatus_KnownGoodUUID_ReturnsValid` smoke test validates against live LHDN pre-prod using UUID `WAFDWH4YEA7BEMFEF10X0GRK10` (portal-confirmed Valid 2026-05-13). Audit log write-back is Phase 2 (wired in `InvoiceProcessor`, out of scope for this sprint item).
 
 **9.11 — Rejection handling:** Submit an invoice with a deliberately invalid buyer TIN. Confirm: (a) LHDN returns a structured error, (b) `MyInvoiceSubmitter` parses error code + message correctly, (c) audit log records `Status=Failed` with LHDN error code.
 

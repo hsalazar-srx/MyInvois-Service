@@ -489,6 +489,60 @@ public class SandboxSubmissionTest
             $"AP invoices should pass validation. Failures: {string.Join(", ", validationFails.Select(r => $"{r.InvoiceNo}: {r.Detail}"))}");
     }
 
+    [Fact(DisplayName = "Sandbox: Poll status for a known-good UUID — validates GetSubmissionStatus against live LHDN API")]
+    public async Task Sandbox_PollStatus_KnownGoodUUID_ReturnsValid()
+    {
+        // Known-good AR invoice UUID confirmed Valid in LHDN pre-prod portal (2026-05-13)
+        // after DecimalNormalizer fix. Using this as a stable fixture so the polling path
+        // can be validated without a new submission or a 3-minute Step 08 wait.
+        const string knownValidUUID = "WAFDWH4YEA7BEMFEF10X0GRK10";
+
+        _output.WriteLine("=== STATUS POLLING SMOKE TEST ===");
+        _output.WriteLine($"Target UUID: {knownValidUUID}");
+        _output.WriteLine($"Execution time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        _output.WriteLine("");
+
+        var apiSettings = GetApiSettings();
+        VerifyCredentials(apiSettings);
+
+        var httpClientFactory = CreateRealHttpClientFactory();
+        var submitter = new MyInvoiceSubmitter(
+            httpClientFactory,
+            Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
+
+        _output.WriteLine($"Endpoint: {apiSettings.BaseUrl}{apiSettings.DetailsEndpoint?.Replace("{uuid}", knownValidUUID)}");
+        _output.WriteLine("");
+
+        // Act
+        _output.WriteLine("--- Calling GetSubmissionStatus ---");
+        var status = await submitter.GetSubmissionStatus(knownValidUUID, CancellationToken.None);
+
+        // Report
+        _output.WriteLine($"Returned status: {status ?? "(null)"}");
+        _output.WriteLine("");
+
+        if (status == "Valid")
+        {
+            _output.WriteLine("✅ Status is Valid — GetSubmissionStatus correctly reads document status from LHDN API.");
+        }
+        else if (status == null)
+        {
+            _output.WriteLine("❌ Null returned — likely an HTTP error or deserialisation failure. Check logs.");
+        }
+        else
+        {
+            _output.WriteLine($"⚠️  Unexpected status '{status}'. Valid is expected for this UUID.");
+            _output.WriteLine("   Possible causes: pre-prod environment reset, or UUID aged out of the portal index.");
+        }
+
+        // Assert
+        status.Should().Be("Valid",
+            $"UUID {knownValidUUID} was portal-confirmed Valid on 2026-05-13. " +
+            "If this fails, the pre-prod environment may have been reset — re-submit a fresh invoice " +
+            "and update knownValidUUID with the new UUID.");
+    }
+
     /// <summary>
     /// LHDN Diagnostic Submission — captures every artifact LHDN support requested:
     ///   1. Original submitted document (decoded JSON from base64)
