@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore;
 using MyInvois.Api.Middleware;
+using MyInvois.Service.Configuration;
 using MyInvois.Service.DataAccess;
 using Serilog;
 using Serilog.Context;
@@ -31,7 +33,28 @@ builder.Services.AddControllers();
 //   dotnet user-secrets set "MovexDb:ConnectionString"  "DSN=AS400;UID=...;PWD=...;"
 builder.Services.AddMovexDataAccess(builder.Configuration);
 
+// Audit logging (SQLite/EF Core, ADR-014)
+builder.Services.AddAuditLogging(builder.Configuration);
+
+// MyInvois API settings — credentials and endpoint from user-secrets / appsettings.
+builder.Services.Configure<MyInvoisApiSettings>(builder.Configuration.GetSection("MyInvoisApi"));
+
+// Named HttpClient used by MyInvoiceSubmitter for all LHDN API calls.
+builder.Services.AddHttpClient("MyInvois");
+
+// Full invoice submission pipeline: Reader → Mapper → Submitter → Processor
+builder.Services.AddMyInvoisSubmissionPipeline();
+
 var app = builder.Build();
+
+// Initialize SQLite audit database: create schema and enable WAL mode (ADR-014).
+using (var scope = app.Services.CreateScope())
+{
+    var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<MyInvois.Service.Data.AuditDbContext>>();
+    using var ctx = dbFactory.CreateDbContext();
+    ctx.Database.EnsureCreated();
+    ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
+}
 
 // CorrelationId middleware — reads X-Correlation-Id from callers (SM-Portal forwards it),
 // or generates a new one, and pushes it into the Serilog LogContext for end-to-end tracing.

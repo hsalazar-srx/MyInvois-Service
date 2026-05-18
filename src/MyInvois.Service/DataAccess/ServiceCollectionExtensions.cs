@@ -63,6 +63,21 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Register the full invoice submission pipeline:
+    /// IMovexInvoiceReader, IMyInvoisMapper, IMyInvoiceSubmitter, IInvoiceProcessor.
+    /// Callers must also call AddMovexDataAccess() and AddAuditLogging() and configure
+    /// MyInvoisApiSettings and an HttpClient for "MyInvoisApiClient".
+    /// </summary>
+    public static IServiceCollection AddMyInvoisSubmissionPipeline(this IServiceCollection services)
+    {
+        services.AddScoped<IMovexInvoiceReader, MovexInvoiceReader>();
+        services.AddScoped<IMyInvoisMapper, MyInvoisMapper>();
+        services.AddScoped<IMyInvoiceSubmitter, MyInvoiceSubmitter>();
+        services.AddScoped<IInvoiceProcessor, InvoiceProcessor>();
+        return services;
+    }
+
+    /// <summary>
     /// Register SQLite audit logging services (ADR-014).
     /// Configures IDbContextFactory&lt;AuditDbContext&gt; and IAuditLogger.
     /// WAL mode must be enabled by the host after DI is built:

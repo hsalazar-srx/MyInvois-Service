@@ -39,6 +39,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MyInvois.Service\MyInvois.Service.csproj" />
+    <ProjectReference Include="..\..\src\MyInvois.Api\MyInvois.Api.csproj" />
   </ItemGroup>
 
 </Project>
