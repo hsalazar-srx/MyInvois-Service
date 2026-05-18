@@ -761,7 +761,7 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 | 9.9 | **AP portal Step 08 Valid** — submit current-dated AP invoice, confirm portal Valid | ⏳ Pending | — | P0 |
 | 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ✅ Done | pending commit | P0 |
 | 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ✅ Done | pending commit | P0 |
-| 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ⏳ Pending | — | P0 |
+| 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ✅ Done | pending commit | P0 |
 | 9.13 | Volume / rate-limit validation (5–10 invoice batch → confirm Polly retry fires) | ⏳ Pending | — | P1 |
 | 9.14 | Finance clarification: domestic supplier self-billing scope | ⏳ Pending | — | P1 |
 
@@ -787,7 +787,7 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 
 **9.11 ✅ Done (2026-05-18)** — Rejection handling validated. Key finding: LHDN Step 07 (synchronous) only validates XAdES signature and duplicate codeNumber — it does NOT validate field values (TIN, currency, amounts). Field validation runs async in Step 08. The `rejectedDocuments[]` path in `MyInvoiceSubmitter` is therefore covered by unit tests only (live pre-prod cannot trigger it via field corruption). Two new unit tests added: `Submit_Http200WithRejectedDocuments_ReturnsFailed` (CF3151 with detail concatenation) and `Submit_Http200WithRejectedDocuments_NoRetryAttempted` (CF321, verifies Polly does not retry on HTTP 200). Smoke test `Sandbox_RejectionHandling_DocumentLhdnValidationBehaviour` documents the Step 07/08 model and confirms endpoint reachability. 239 unit tests passing.
 
-**9.12 — Duplicate detection:** Resubmit a previously accepted invoice. Confirm `DUP001` is returned, service does not double-log, and `IsInvoiceAlreadySubmitted` fires before re-submission.
+**9.12 ✅ Done (2026-05-18)** — Duplicate detection validated end-to-end. Existing coverage confirmed: `AuditLoggerTests` (3 tests), `AuditLoggerIntegrationTests.LogSubmission_Success_ThenQueryDuplicate_ReturnsTrue`, `InvoiceProcessorTests.ProcessSingleInvoice_AlreadySubmitted_ReturnsFailed`, `Submit_DuplicateInvoice_NoRetry` (DS302). New integration test added: `DuplicateDetection_FullLifecycle_SuccessBlocksResubmission_FailureAllowsRetry` — uses real SQLite (no mocks on audit layer), verifies the three rules: (1) new invoice not blocked, (2) Success status blocks resubmission, (3) Failed status allows retry. 240 unit tests passing.
 
 **9.13 — Rate limit / Polly:** Submit a batch of 10 invoices rapidly and confirm Polly retry + circuit breaker fires correctly on 429.
 
