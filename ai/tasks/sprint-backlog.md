@@ -740,3 +740,64 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 | SDK integration incomplete | Cannot submit to LHDN | Complete SDK work during Sprint 7 extended period (Mar-Apr) |
 | AP SQL fix not validated | Purchase invoices excluded from go-live | Launch with sales invoices only; AP in follow-up batch |
 
+---
+
+## Sprint 9: Pre-Production Validation (May 2026)
+
+> **Created:** 2026-05-14 — Go-live deferred from Apr 30 (Finance capacity). Sprint 9 focuses on end-to-end pre-production validation of both AR and AP pipelines following XAdES signing resolution. AR confirmed Valid (UUID `WAFDWH4YEA7BEMFEF10X0GRK10`). AP pipeline unblocked — 844 invoices in scope after `eptrcd` fix.
+
+### Work Items Summary
+
+| ID | Task | Status | Commits | Priority |
+|----|------|--------|---------|----------|
+| 9.1 | Fix DS320 (propsDigest scope) + DS322 scope (Signature not stripped) | ✅ Done | `73f265f` | P0 |
+| 9.2 | Fix DS322 decimal trailing zeros — `DecimalNormalizer` | ✅ Done | `8c3f1ce` | P0 |
+| 9.3 | Remove dead `StripJsonKeysFromMinified` / `FindJsonBlockEnd` | ✅ Done | `8c3f1ce` | P1 |
+| 9.4 | Document XAdES 4-bug investigation in knowledge vault + compliance doc | ✅ Done | `cf49c23` (vault) | P1 |
+| 9.5 | Fix AP query `eptrcd = 50 → 10` (FX revaluations → supplier invoices) | ✅ Done | `b1c067b` | P0 |
+| 9.6 | Add dedicated `Sandbox_AP_FetchSignSubmit` smoke test | ✅ Done | `b1c067b` | P0 |
+| 9.7 | Fix AP line tax: remove incorrect FGINAE lateral join → hardcode `TaxAmount = 0` | ✅ Done | `829c358` | P0 |
+| 9.8 | **AR portal Step 08 confirmed Valid** — UUID `WAFDWH4YEA7BEMFEF10X0GRK10` | ✅ Done | — | P0 |
+| 9.9 | **AP portal Step 08 Valid** — submit current-dated AP invoice, confirm portal Valid | ⏳ Pending | — | P0 |
+| 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ⏳ Pending | — | P0 |
+| 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ⏳ Pending | — | P0 |
+| 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ⏳ Pending | — | P0 |
+| 9.13 | Volume / rate-limit validation (5–10 invoice batch → confirm Polly retry fires) | ⏳ Pending | — | P1 |
+| 9.14 | Finance clarification: domestic supplier self-billing scope | ⏳ Pending | — | P1 |
+
+### Completion Notes
+
+**9.1 ✅ Done (2026-05-11, `73f265f`)** — DS320 and initial DS322 scope bugs fixed. Three bugs: (1) docDigest canonical must exclude both `UBLExtensions` AND `Signature`; (2) propsDigest must cover full `{"Target":"signature","SignedProperties":[...]}` not just inner array; (3) `UBLExtensions` must appear before `Signature` in Invoice property order.
+
+**9.2 ✅ Done (2026-05-13, `8c3f1ce`)** — Final DS322 root cause: LHDN parse+reserializes submitted JSON; their library strips decimal trailing zeros (`160.000000→160`). C# `decimal` scale from MOVEX ODBC driver preserves trailing zeros. Fix: `DecimalNormalizer` `JsonConverter<decimal>` on `MinifyOptions`. Portal confirmed Valid: UUID `WAFDWH4YEA7BEMFEF10X0GRK10`. XAdES signing production-ready.
+
+**9.5 ✅ Done (2026-05-14, `b1c067b`)** — `eptrcd` was `50` (FX revaluations) instead of `10` (supplier invoices). Fixed in both `GetPendingInvoicesAsync` and `GetInvoiceByIdAsync`. Result: 844 AP invoices now returned (was 0).
+
+**9.6 ✅ Done (2026-05-14, `b1c067b`)** — `Sandbox_AP_FetchSignSubmit` smoke test confirms: 844 AP invoices with lines, type 11 self-billed correct, BuyerTIN = our company TIN. Only rejection: CF321 (pre-prod date window — not a production concern).
+
+**9.7 ✅ Done (2026-05-14, `829c358`)** — Confirmed via live CMP100 DB2: all `EPTRCD=10` AP invoices have `EPVTAM=0` (zero-rated SST). `FGINAE` for `EPTRCD=10` has only `F9INIT` 10/11/18 (goods/freight/variance) — no VAT rows. Prior `F9VTCD <> ''` filter summed net amount as tax. Replaced with `SELECT 0 AS VatAmount FROM SYSIBM.SYSDUMMY1`. Verified: `TotalTax=0.00` on all AP invoices.
+
+**9.8 ✅ Done (2026-05-13)** — AR invoice type 01 portal-confirmed Valid after Step 08. UUID `WAFDWH4YEA7BEMFEF10X0GRK10`. XAdES signing + decimal normalization confirmed end-to-end.
+
+### Pending Validation Detail
+
+**9.9 — AP portal Step 08 Valid:** AP type 11 self-billed invoice needs a current-dated invoice (accounting date within LHDN's pre-prod window, ~3 days) to avoid CF321. Submit via `Sandbox_AP_FetchSignSubmit` or `LhdnDiagnostic` test, then check portal after Step 08 runs (~5 min). This is the AP equivalent of the AR confirmation on 9.8.
+
+**9.10 — Status polling:** Verify `GetSubmissionStatus` polls `/documents/{uuid}/details` correctly and writes final `Valid`/`Invalid` status to SQLite audit log. Currently the smoke test captures UUID at submission but does not poll for Step 08 outcome.
+
+**9.11 — Rejection handling:** Submit an invoice with a deliberately invalid buyer TIN. Confirm: (a) LHDN returns a structured error, (b) `MyInvoiceSubmitter` parses error code + message correctly, (c) audit log records `Status=Failed` with LHDN error code.
+
+**9.12 — Duplicate detection:** Resubmit a previously accepted invoice. Confirm `DUP001` is returned, service does not double-log, and `IsInvoiceAlreadySubmitted` fires before re-submission.
+
+**9.13 — Rate limit / Polly:** Submit a batch of 10 invoices rapidly and confirm Polly retry + circuit breaker fires correctly on 429.
+
+**9.14 — Domestic supplier self-billing:** Finance must confirm whether domestic Malaysian suppliers below the mandate threshold require self-billing. Current `idcscd <> 'MY'` filter (foreign-only) held pending this decision.
+
+### Known Risks Sprint 9
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| No current-dated AP invoice available (CF321 blocks 9.9) | Cannot confirm type 11 portal Valid before go-live | Monitor incoming AP invoices daily; run 9.9 as soon as one arrives |
+| Domestic supplier scope undecided (9.14) | AP scope too narrow at go-live | Finance email required; default foreign-only until confirmed |
+| Status polling untested (9.10) | Audit log stuck at `Pending` for Valid invoices | Must complete before go-live |
+

@@ -1,3 +1,4 @@
+namespace MyInvois.Service.Tests.Services;
 
 using System.Net;
 using System.Net.Http.Json;
@@ -651,7 +652,7 @@ public class MyInvoiceSubmitterTests
 
     #region Helper Methods
 
-    private MyInvoiceDocument CreateValidMyInvoiceDocument()
+    private static MyInvoiceDocument CreateValidMyInvoiceDocument()
     {
         return new MyInvoiceDocument
         {
@@ -675,9 +676,9 @@ public class MyInvoiceSubmitterTests
             TotalTax = 60.00m,
             TotalInclTax = 1060.00m,
             PayableAmount = 1060.00m,
-            Lines = new List<MyInvoiceLine>
-            {
-                new MyInvoiceLine
+            Lines =
+            [
+                new()
                 {
                     LineNumber = 1,
                     ItemNumber = "ITEM001",
@@ -692,8 +693,166 @@ public class MyInvoiceSubmitterTests
                     TaxAmount = 60.00m,
                     LineTotalInclTax = 1060.00m
                 }
-            }
+            ]
         };
+    }
+
+    #endregion
+
+    #region GetSubmissionStatus Tests
+
+    private HttpClient CreateHttpClientWithResponse(HttpStatusCode statusCode, object? body)
+    {
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = statusCode,
+                Content = body is null
+                    ? new StringContent("")
+                    : JsonContent.Create(body)
+            });
+        return new HttpClient(handler.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+    }
+
+    private void SetupTokenAndDetailsClient(HttpClient tokenClient, HttpClient detailsClient)
+    {
+        // First call → token, subsequent calls → details
+        var callCount = 0;
+        _httpClientFactoryMock
+            .Setup(f => f.CreateClient("MyInvois"))
+            .Returns(() => callCount++ == 0 ? tokenClient : detailsClient);
+    }
+
+    private HttpClient CreateTokenClient()
+        => CreateHttpClientWithResponse(HttpStatusCode.OK, new
+        {
+            access_token = "test-token",
+            token_type = "Bearer",
+            expires_in = 3600
+        });
+
+    [Fact]
+    public async Task GetSubmissionStatus_ValidUUID_ReturnsStatusFromApi()
+    {
+        // Arrange
+        var uuid = "WAFDWH4YEA7BEMFEF10X0GRK10";
+        var detailsBody = new
+        {
+            uuid,
+            submissionUid = "SUB001",
+            internalId = "INV-001",
+            status = "Valid",
+            dateTimeValidated = "2026-05-14T12:00:00Z"
+        };
+
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus(uuid);
+
+        // Assert
+        status.Should().Be("Valid");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_InvalidDocument_ReturnsInvalidStatus()
+    {
+        // Arrange
+        var detailsBody = new { uuid = "BAD-UUID", status = "Invalid" };
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("BAD-UUID");
+
+        // Assert
+        status.Should().Be("Invalid");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_StillProcessing_ReturnsSubmittedStatus()
+    {
+        // Arrange — Step 08 not yet complete
+        var detailsBody = new { uuid = "PENDING-UUID", status = "Submitted" };
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("PENDING-UUID");
+
+        // Assert
+        status.Should().Be("Submitted");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_ApiReturnsNotFound_ReturnsNull()
+    {
+        // Arrange
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.NotFound, null));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("UNKNOWN-UUID");
+
+        // Assert
+        status.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_ApiReturnsServerError_ReturnsNull()
+    {
+        // Arrange
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.InternalServerError, null));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("ANY-UUID");
+
+        // Assert
+        status.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_EmptyUUID_ThrowsArgumentException()
+    {
+        // Act
+        var act = async () => await _sut.GetSubmissionStatus(string.Empty);
+
+        // Assert
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("myInvoisUUID");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_UrlContainsUUID()
+    {
+        // Arrange — capture the request URL
+        var uuid = "WAFDWH4YEA7BEMFEF10X0GRK10";
+        HttpRequestMessage? capturedRequest = null;
+
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((req, _) => capturedRequest = req)
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = JsonContent.Create(new { uuid, status = "Valid" })
+            });
+
+        var detailsClient = new HttpClient(handler.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        SetupTokenAndDetailsClient(CreateTokenClient(), detailsClient);
+
+        // Act
+        await _sut.GetSubmissionStatus(uuid);
+
+        // Assert — URL must contain the UUID
+        capturedRequest!.RequestUri!.ToString().Should().Contain(uuid);
     }
 
     #endregion

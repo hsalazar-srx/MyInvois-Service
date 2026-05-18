@@ -66,14 +66,7 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
     // Polly retry policy (resilience-patterns skill)
     private readonly AsyncRetryPolicy<HttpResponseMessage> _retryPolicy;
 
-    // Non-retriable error codes (per ADR-008)
-    private static readonly HashSet<string> NonRetriableErrorCodes =
-    [
-        "DS301", // Invalid signature
-        "DS302", // Duplicate submission
-        "DS101", // Invalid format
-        "DS102"  // Invalid mandatory field
-    ];
+    private static readonly JsonSerializerOptions _payloadSerializerOptions = new() { WriteIndented = false };
 
     public MyInvoiceSubmitter(
         IHttpClientFactory httpClientFactory,
@@ -276,11 +269,51 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
 
     public async Task<string?> GetSubmissionStatus(string myInvoisUUID, CancellationToken cancellationToken = default)
     {
-        // TODO: Phase 2 - Implement status polling
-        // Call GET /api/v1.0/documents/{UUID}/details
-        _logger.LogWarning("GetSubmissionStatus not yet implemented (scheduled for Phase 2)");
-        await Task.CompletedTask;
-        return null;
+        if (string.IsNullOrWhiteSpace(myInvoisUUID))
+            throw new ArgumentException("UUID must not be empty.", nameof(myInvoisUUID));
+
+        var token = await GetAccessToken(cancellationToken);
+        var url = _settings.BaseUrl + _settings.DetailsEndpoint.Replace("{uuid}", myInvoisUUID);
+
+        _logger.LogInformation("Polling document status. UUID: {UUID}, URL: {Url}", myInvoisUUID, url);
+
+        var client = _httpClientFactory.CreateClient("MyInvois");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.SendAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "HTTP error polling document status for UUID {UUID}", myInvoisUUID);
+            return null;
+        }
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Non-success response polling UUID {UUID}: HTTP {Status} — {Body}",
+                myInvoisUUID, (int)response.StatusCode, content[..Math.Min(content.Length, 300)]);
+            return null;
+        }
+
+        try
+        {
+            var details = JsonSerializer.Deserialize<DocumentDetailsResponse>(content);
+            var status = details?.Status;
+            _logger.LogInformation("Document status for UUID {UUID}: {Status}", myInvoisUUID, status ?? "null");
+            return status;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to parse document details response for UUID {UUID}. Body: {Body}",
+                myInvoisUUID, content[..Math.Min(content.Length, 300)]);
+            return null;
+        }
     }
 
     #region Private Helper Methods
@@ -343,7 +376,7 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
             }
         };
 
-        return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = false });
+        return JsonSerializer.Serialize(payload, _payloadSerializerOptions);
     }
 
     /// <summary>
@@ -361,7 +394,7 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
 
         var request = new HttpRequestMessage(HttpMethod.Post, submissionEndpoint)
         {
-            Headers = { { "Authorization", $"Bearer {token}" } },
+            Headers = { Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token) },
             Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json")
         };
 
@@ -488,6 +521,71 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
 
         [System.Text.Json.Serialization.JsonPropertyName("details")]
         public List<LhdnErrorDetail>? Details { get; set; }
+    }
+
+    /// <summary>
+    /// LHDN GET /api/v1.0/documents/{uuid}/details response.
+    /// Step 08 async validator writes the final status here 2–5 minutes after submission.
+    /// Status values: "Valid", "Invalid", "Cancelled", "Submitted" (still processing).
+    /// </summary>
+    private class DocumentDetailsResponse
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("uuid")]
+        public string? Uuid { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("submissionUid")]
+        public string? SubmissionUid { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("longId")]
+        public string? LongId { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("internalId")]
+        public string? InternalId { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("typeName")]
+        public string? TypeName { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("typeVersionName")]
+        public string? TypeVersionName { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("issuerTin")]
+        public string? IssuerTin { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("issuerName")]
+        public string? IssuerName { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receiverId")]
+        public string? ReceiverId { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("receiverName")]
+        public string? ReceiverName { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("dateTimeIssued")]
+        public string? DateTimeIssued { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("dateTimeReceived")]
+        public string? DateTimeReceived { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("dateTimeValidated")]
+        public string? DateTimeValidated { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("totalSales")]
+        public decimal? TotalSales { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("totalDiscount")]
+        public decimal? TotalDiscount { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("netAmount")]
+        public decimal? NetAmount { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("total")]
+        public decimal? Total { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public string? Status { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("createdByUserId")]
+        public string? CreatedByUserId { get; set; }
     }
 
     private class LhdnErrorDetail
