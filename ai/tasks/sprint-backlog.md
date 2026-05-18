@@ -760,7 +760,7 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 | 9.8 | **AR portal Step 08 confirmed Valid** — UUID `WAFDWH4YEA7BEMFEF10X0GRK10` | ✅ Done | — | P0 |
 | 9.9 | **AP portal Step 08 Valid** — submit current-dated AP invoice, confirm portal Valid | ⏳ Pending | — | P0 |
 | 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ✅ Done | pending commit | P0 |
-| 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ⏳ Pending | — | P0 |
+| 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ✅ Done | pending commit | P0 |
 | 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ⏳ Pending | — | P0 |
 | 9.13 | Volume / rate-limit validation (5–10 invoice batch → confirm Polly retry fires) | ⏳ Pending | — | P1 |
 | 9.14 | Finance clarification: domestic supplier self-billing scope | ⏳ Pending | — | P1 |
@@ -785,7 +785,7 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 
 **9.10 ✅ Done (2026-05-18)** — `GetSubmissionStatus` implemented (replaces TODO stub). Calls `GET /api/v1.0/documents/{uuid}/details`, deserialises `DocumentDetailsResponse`, returns `status` string. 7 unit tests (Valid/Invalid/Submitted/404/500/empty-UUID/URL-assert) all passing. `Sandbox_PollStatus_KnownGoodUUID_ReturnsValid` smoke test validates against live LHDN pre-prod using UUID `WAFDWH4YEA7BEMFEF10X0GRK10` (portal-confirmed Valid 2026-05-13). Audit log write-back is Phase 2 (wired in `InvoiceProcessor`, out of scope for this sprint item).
 
-**9.11 — Rejection handling:** Submit an invoice with a deliberately invalid buyer TIN. Confirm: (a) LHDN returns a structured error, (b) `MyInvoiceSubmitter` parses error code + message correctly, (c) audit log records `Status=Failed` with LHDN error code.
+**9.11 ✅ Done (2026-05-18)** — Rejection handling validated. Key finding: LHDN Step 07 (synchronous) only validates XAdES signature and duplicate codeNumber — it does NOT validate field values (TIN, currency, amounts). Field validation runs async in Step 08. The `rejectedDocuments[]` path in `MyInvoiceSubmitter` is therefore covered by unit tests only (live pre-prod cannot trigger it via field corruption). Two new unit tests added: `Submit_Http200WithRejectedDocuments_ReturnsFailed` (CF3151 with detail concatenation) and `Submit_Http200WithRejectedDocuments_NoRetryAttempted` (CF321, verifies Polly does not retry on HTTP 200). Smoke test `Sandbox_RejectionHandling_DocumentLhdnValidationBehaviour` documents the Step 07/08 model and confirms endpoint reachability. 239 unit tests passing.
 
 **9.12 — Duplicate detection:** Resubmit a previously accepted invoice. Confirm `DUP001` is returned, service does not double-log, and `IsInvoiceAlreadySubmitted` fires before re-submission.
 

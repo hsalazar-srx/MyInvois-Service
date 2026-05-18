@@ -648,6 +648,129 @@ public class MyInvoiceSubmitterTests
             ItExpr.IsAny<CancellationToken>());
     }
 
+    [Fact]
+    public async Task Submit_Http200WithRejectedDocuments_ReturnsFailed()
+    {
+        // LHDN returns HTTP 200 even when individual documents are rejected.
+        // The rejection is signalled via the rejectedDocuments array in the response body.
+        // This is the most common real-world rejection path (e.g. invalid TIN, CF321, DS3xx).
+        var document = CreateValidMyInvoiceDocument();
+
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
+
+        // HTTP 200 body with the submitted invoice in rejectedDocuments
+        var submissionResponse = new
+        {
+            submissionUid = "SUB-TEST-001",
+            acceptedDocuments = Array.Empty<object>(),
+            rejectedDocuments = new[]
+            {
+                new
+                {
+                    invoiceCodeNumber = document.InvoiceNumber,
+                    error = new
+                    {
+                        code = "CF3151",
+                        message = "Buyer TIN is invalid",
+                        details = new[]
+                        {
+                            new { code = "CF3151", message = "TIN 'INVALIDTIN' does not exist in LHDN registry", target = "buyerTin" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = JsonContent.Create(tokenResponse)
+            });
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK, // 200 — LHDN always returns 200 for submission envelope
+                Content = JsonContent.Create(submissionResponse)
+            });
+
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
+
+        // Act
+        var result = await _sut.Submit(document);
+
+        // Assert
+        result.Status.Should().Be("Failed");
+        result.ErrorCode.Should().Be("CF3151");
+        result.ErrorMessage.Should().Contain("Buyer TIN is invalid");
+        result.ErrorMessage.Should().Contain("CF3151"); // detail code concatenated after " | "
+        result.ErrorMessage.Should().Contain("does not exist in LHDN registry"); // detail message included
+    }
+
+    [Fact]
+    public async Task Submit_Http200WithRejectedDocuments_NoRetryAttempted()
+    {
+        // A rejection inside rejectedDocuments must NOT trigger Polly retry —
+        // LHDN returned 200, so the HTTP layer is healthy; retrying would re-submit the same bad invoice.
+        var document = CreateValidMyInvoiceDocument();
+
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
+        var submissionResponse = new
+        {
+            submissionUid = "SUB-TEST-002",
+            acceptedDocuments = Array.Empty<object>(),
+            rejectedDocuments = new[]
+            {
+                new
+                {
+                    invoiceCodeNumber = document.InvoiceNumber,
+                    error = new { code = "CF321", message = "Invoice date too old", details = Array.Empty<object>() }
+                }
+            }
+        };
+
+        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(submissionResponse) });
+
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
+
+        // Act
+        var result = await _sut.Submit(document);
+
+        // Assert — Failed with correct code
+        result.Status.Should().Be("Failed");
+        result.ErrorCode.Should().Be("CF321");
+
+        // Submission endpoint called exactly once — no retry on HTTP 200 rejection
+        httpMessageHandlerMock.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
     #endregion
 
     #region Helper Methods
