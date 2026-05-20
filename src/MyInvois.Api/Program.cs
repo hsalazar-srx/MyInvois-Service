@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using MyInvois.Api.Middleware;
 using MyInvois.Service.Configuration;
 using MyInvois.Service.DataAccess;
+using MyInvois.Service.Services;
 using Serilog;
 using Serilog.Context;
 
@@ -44,6 +45,11 @@ builder.Services.AddHttpClient("MyInvois");
 
 // Full invoice submission pipeline: Reader → Mapper → Submitter → Processor
 builder.Services.AddMyInvoisSubmissionPipeline();
+
+// Daily batch scheduler (BackgroundService) — fires at BatchScheduler:DailyRunHour each day.
+// Set BatchScheduler:Enabled=false in dev/test to suppress background processing.
+builder.Services.Configure<BatchSchedulerSettings>(builder.Configuration.GetSection("BatchScheduler"));
+builder.Services.AddHostedService<DailyBatchHostedService>();
 
 var app = builder.Build();
 

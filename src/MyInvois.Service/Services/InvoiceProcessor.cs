@@ -76,11 +76,18 @@ public class InvoiceProcessor : IInvoiceProcessor
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public async Task<BatchResult> ProcessDailyBatch(CancellationToken cancellationToken = default)
+    public Task<BatchResult> ProcessDailyBatch(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Starting daily batch processing");
-        // TODO: Implement daily batch logic (Phase 2)
-        throw new NotImplementedException("Daily batch processing scheduled for Phase 2");
+        // Yesterday midnight → today midnight (local time, converted to UTC for DB2 query).
+        var today    = DateTime.Today;
+        var fromDate = today.AddDays(-1);
+        var toDate   = today.AddSeconds(-1); // 23:59:59 yesterday
+
+        _logger.LogInformation(
+            "Starting daily batch processing. From: {From:yyyy-MM-dd}, To: {To:yyyy-MM-dd}",
+            fromDate, toDate);
+
+        return ProcessDateRangeBatch(fromDate, toDate, cancellationToken);
     }
 
     public Task<BatchResult> ProcessMonthlyBatch(CancellationToken cancellationToken = default)
