@@ -629,10 +629,10 @@ Day 5 (Fri):  3h →  0h  (6.8 review + merge)
 | 7.11 | Add `POST /api/v1/batch/process-range` endpoint to MyInvois.Api | API | ✅ Done | developer-dotnet | 4h | P1 |
 | 7.12 | Wire up batch scheduling (Windows Task Scheduler or Quartz.NET) | Ops | ✅ Done | developer-dotnet | 8h | P1 |
 | | **— Performance & Dry Run —** | | | | | |
-| 7.13 | Create performance test suite — baseline <5s/invoice, 100-invoice batch throughput | Testing | ⏳ Ready | developer-dotnet | 8h | P1 |
+| 7.13 | Create performance test suite — baseline <5s/invoice, 100-invoice batch throughput | Testing | ✅ Done | developer-dotnet | 8h | P1 |
 | 7.14 | End-to-end dry run: real DB2 → mapper → validators → sandbox submission → audit log | Testing | 🔶 Partial | developer-dotnet | 8h | P0 |
 | | **— Documentation —** | | | | | |
-| 7.15 | Update PROJECT_STATUS.md with Sprint 7 progress | Docs | ⏳ Ready | developer-dotnet | 2h | P2 |
+| 7.15 | Update PROJECT_STATUS.md with Sprint 7 progress | Docs | ✅ Done | developer-dotnet | 2h | P2 |
 | | **— AR Line Items Fix (2026-04-02) —** | | | | | |
 | 7.16 | Fix AR line items root cause: `OINVOL.OIIVNO` column does not exist — replace with `FSLEDG→OINVOH→ODLINE` join path | Data | ✅ Done | developer-dotnet | 6h | P0 |
 | 7.17 | Fix classification code: remove MITMAS join, hardcode LHDN default `"022"` (Others) for all line items | Data | ✅ Done | developer-dotnet | 1h | P0 |
@@ -679,6 +679,10 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 **7.18 ✅ Done (2026-04-02)** — `FSLEDG.ESCUAM` is the total invoice amount from the AR ledger, but may span multiple delivery orders (ODLINE rows from one OINVOH voucher cover only one delivery). Extended `MovexInvoiceReader` totals recalculation from AP-only to both AP and AR: header totals are now overwritten by the sum of fetched ODLINE lines, ensuring `TotalExclTax` matches the UBL line items.
 
 **7.11 ✅ Done (2026-05-20, `b72d764`)** — `POST /api/v1/batch/process-range` endpoint added to `BatchController`. Validates date range (max 93 days), delegates to `IInvoiceProcessor.ProcessDateRangeBatch()`, returns `BatchProcessResponse` summary. `AddMyInvoisSubmissionPipeline()` DI extension registers full pipeline (Reader → Mapper → Submitter → Processor). `Program.cs` wired: audit logging, `MyInvoisApiSettings`, named `HttpClient("MyInvois")`, SQLite WAL init. 6 unit tests (happy path, validation guards, delegation). EF Core pinned to 8.0.27 across projects.
+
+**7.13 ✅ Done (2026-05-20, `e09b289`)** — 4 performance baseline tests (`Category=Performance`): single invoice < 500 ms, 10-invoice batch < 2 s, 100-invoice batch < 15 s (SuccessCount=100 asserted), throughput > 10 inv/s. All I/O mocked — measures pipeline CPU overhead only. Warm-up uses distinct invoice numbers to avoid duplicate-detection skipping real-run invoices from SQLite audit log. 4/4 pass in 410 ms on dev machine.
+
+**7.15 ✅ Done (2026-05-20, `bbc5cd7`)** — `PROJECT_STATUS.md` updated to v6.3: test count 263, implementation table includes batch endpoint + scheduler + perf tests, key status reflects Sprint 9, Phase 2 architecture note updated.
 
 **7.12 ✅ Done (2026-05-20, `8fd2717`)** — In-process daily batch scheduler via `DailyBatchHostedService : BackgroundService`. Fires at `BatchScheduler:DailyRunHour:DailyRunMinute` (default 02:00 local). Calls `ProcessDateRangeBatch` for yesterday (configurable `LookbackDays`). Uses `IServiceScopeFactory` — fresh DI scope per run. Exceptions swallowed — bad run never crashes IIS. `ProcessDailyBatch` now implemented (was `NotImplementedException`). `BatchSchedulerSettings` config class with `Enabled` flag (set `false` in dev). 6 unit tests: `TimeUntilNextRun` pure logic, disabled guard, date range delegation, exception isolation.
 
