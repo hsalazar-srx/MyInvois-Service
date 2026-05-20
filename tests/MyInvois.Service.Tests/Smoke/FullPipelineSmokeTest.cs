@@ -51,9 +51,13 @@ public class FullPipelineSmokeTest
         _output.WriteLine($"Connection String: {(string.IsNullOrEmpty(movexDbSettings.ConnectionString) ? "NOT SET" : "SET (masked)")}");
         _output.WriteLine("");
 
+        var lineItemFetcher = new MovexLineItemFetcher(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexLineItemFetcher>());
         var dataSource = new DirectQueryDataSource(
             Options.Create(movexDbSettings),
-            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>(),
+            lineItemFetcher);
 
         var now = DateTime.UtcNow;
         var fromDate = new DateTime(now.Year, now.Month, 1);
@@ -98,9 +102,13 @@ public class FullPipelineSmokeTest
         _output.WriteLine("");
 
         // --- REAL Data Access ---
+        var lineItemFetcher = new MovexLineItemFetcher(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexLineItemFetcher>());
         var dataSource = new DirectQueryDataSource(
             Options.Create(movexDbSettings),
-            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>(),
+            lineItemFetcher);
 
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
@@ -138,9 +146,15 @@ public class FullPipelineSmokeTest
             new LoggerFactory().CreateLogger<MyInvoisMapper>());
 
         // --- REAL Submitter (real HTTP, real XAdES signing) ---
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory,
+            Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
+
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory,
             Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         // --- REAL Audit Logger (in-memory SQLite — no file I/O needed for smoke test) ---

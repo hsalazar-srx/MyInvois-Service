@@ -99,9 +99,15 @@ public class BatchPerformanceTests : IDisposable
             companySettings,
             new Mock<ILogger<MyInvoisMapper>>().Object);
 
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory.Object,
+            apiSettings,
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory.Object,
             apiSettings,
+            tokenService,
             new Mock<ILogger<MyInvoiceSubmitter>>().Object);
 
         var auditLogger = new AuditLogger(

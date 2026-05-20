@@ -113,9 +113,15 @@ public class BatchProcessingE2ETests : IDisposable
             companySettings,
             new Mock<ILogger<MyInvoisMapper>>().Object);
 
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactoryMock.Object,
+            apiSettings,
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         var submitter = new MyInvoiceSubmitter(
             httpClientFactoryMock.Object,
             apiSettings,
+            tokenService,
             new Mock<ILogger<MyInvoiceSubmitter>>().Object);
 
         // AuditLogger uses in-memory SQLite via factory (ADR-014)

@@ -42,9 +42,15 @@ public class MyInvoiceSubmitterTests
             TIN = "C12345678901"
         };
 
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object,
+            Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         _sut = new MyInvoiceSubmitter(
             _httpClientFactoryMock.Object,
             Options.Create(_apiSettings),
+            tokenService,
             _loggerMock.Object);
     }
 
@@ -53,208 +59,49 @@ public class MyInvoiceSubmitterTests
     [Fact]
     public void Constructor_WithNullHttpClientFactory_ThrowsArgumentNullException()
     {
-        // Arrange & Act
-        var action = () => new MyInvoiceSubmitter(
-            null!,
-            Options.Create(_apiSettings),
-            _loggerMock.Object);
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
 
-        // Assert
-        action.Should().Throw<ArgumentNullException>()
-            .WithParameterName("httpClientFactory");
+        var action = () => new MyInvoiceSubmitter(
+            null!, Options.Create(_apiSettings), tokenService, _loggerMock.Object);
+
+        action.Should().Throw<ArgumentNullException>().WithParameterName("httpClientFactory");
     }
 
     [Fact]
     public void Constructor_WithNullSettings_ThrowsArgumentNullException()
     {
-        // Arrange & Act
-        var action = () => new MyInvoiceSubmitter(
-            _httpClientFactoryMock.Object,
-            null!,
-            _loggerMock.Object);
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
 
-        // Assert
-        action.Should().Throw<ArgumentNullException>()
-            .WithParameterName("settings");
+        var action = () => new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, null!, tokenService, _loggerMock.Object);
+
+        action.Should().Throw<ArgumentNullException>().WithParameterName("settings");
+    }
+
+    [Fact]
+    public void Constructor_WithNullTokenService_ThrowsArgumentNullException()
+    {
+        var action = () => new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings), null!, _loggerMock.Object);
+
+        action.Should().Throw<ArgumentNullException>().WithParameterName("tokenService");
     }
 
     [Fact]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        // Arrange & Act
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         var action = () => new MyInvoiceSubmitter(
-            _httpClientFactoryMock.Object,
-            Options.Create(_apiSettings),
-            null!);
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings), tokenService, null!);
 
-        // Assert
-        action.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
-    }
-
-    #endregion
-
-    #region GetAccessToken Tests
-
-    [Fact]
-    public async Task GetAccessToken_FirstCall_FetchesNewToken()
-    {
-        // Arrange
-        var tokenResponse = new
-        {
-            access_token = "new-access-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
-        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.Method == HttpMethod.Post &&
-                    req.RequestUri!.ToString().Contains("/connect/token")),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
-
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
-
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
-
-        // Act
-        var result = await _sut.GetAccessToken();
-
-        // Assert
-        result.Should().Be("new-access-token");
-        httpMessageHandlerMock.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task GetAccessToken_CachedValid_ReturnsCachedToken()
-    {
-        // Arrange
-        var tokenResponse = new
-        {
-            access_token = "cached-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
-        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
-
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
-
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
-
-        // Act - First call
-        var firstToken = await _sut.GetAccessToken();
-
-        // Act - Second call (should use cache)
-        var secondToken = await _sut.GetAccessToken();
-
-        // Assert
-        firstToken.Should().Be("cached-token");
-        secondToken.Should().Be("cached-token");
-        secondToken.Should().BeSameAs(firstToken);
-
-        // Verify HTTP call was made only once (cached for second call)
-        httpMessageHandlerMock.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task GetAccessToken_CachedExpired_FetchesNewToken()
-    {
-        // Arrange - First token with very short expiry (already expired)
-        var firstTokenResponse = new
-        {
-            access_token = "expired-token",
-            token_type = "Bearer",
-            expires_in = -1 // Already expired
-        };
-
-        var secondTokenResponse = new
-        {
-            access_token = "refreshed-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
-        var callCount = 0;
-        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(() =>
-            {
-                callCount++;
-                var response = callCount == 1 ? firstTokenResponse : secondTokenResponse;
-                return new HttpResponseMessage
-                {
-                    StatusCode = HttpStatusCode.OK,
-                    Content = JsonContent.Create(response)
-                };
-            });
-
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
-
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
-
-        // Act
-        var firstToken = await _sut.GetAccessToken();
-        var secondToken = await _sut.GetAccessToken(); // Should fetch new token
-
-        // Assert
-        firstToken.Should().Be("expired-token");
-        secondToken.Should().Be("refreshed-token");
-
-        // Verify HTTP calls were made twice (token expired)
-        httpMessageHandlerMock.Protected().Verify(
-            "SendAsync",
-            Times.Exactly(2),
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>());
+        action.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
 
     #endregion

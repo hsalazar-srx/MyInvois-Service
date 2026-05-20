@@ -29,6 +29,9 @@ public static class ServiceCollectionExtensions
         var settings = configuration.GetSection("MovexDb").Get<MovexDbSettings>()
             ?? new MovexDbSettings();
 
+        // Line-item fetcher is shared by all IInvoiceDataSource implementations.
+        services.AddScoped<MovexLineItemFetcher>();
+
         // Register IInvoiceDataSource based on strategy
         switch (settings.DataSourceStrategy)
         {
@@ -70,6 +73,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMyInvoisSubmissionPipeline(this IServiceCollection services)
     {
+        // Token service is Singleton: shares the in-memory OAuth cache across all scopes.
+        services.AddSingleton<IMyInvoisTokenService, MyInvoisTokenService>();
         services.AddScoped<IMovexInvoiceReader, MovexInvoiceReader>();
         services.AddScoped<IMyInvoisMapper, MyInvoisMapper>();
         services.AddScoped<IMyInvoiceSubmitter, MyInvoiceSubmitter>();

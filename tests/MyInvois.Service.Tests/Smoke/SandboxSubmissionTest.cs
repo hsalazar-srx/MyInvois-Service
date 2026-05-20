@@ -51,9 +51,13 @@ public class SandboxSubmissionTest
         VerifyCredentials(apiSettings);
 
         var httpClientFactory = CreateRealHttpClientFactory();
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory,
             Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         var identityBase = string.IsNullOrEmpty(apiSettings.IdentityBaseUrl)
@@ -150,9 +154,13 @@ public class SandboxSubmissionTest
         _output.WriteLine("");
 
         // --- REAL Data Access Layer ---
+        var lineItemFetcher = new MovexLineItemFetcher(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexLineItemFetcher>());
         var dataSource = new DirectQueryDataSource(
             Options.Create(movexDbSettings),
-            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>(),
+            lineItemFetcher);
 
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
@@ -185,9 +193,13 @@ public class SandboxSubmissionTest
             new LoggerFactory().CreateLogger<MyInvoisMapper>());
 
         // --- REAL Submitter (hits actual sandbox API) ---
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory,
             Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         // ====================================================================
@@ -354,9 +366,13 @@ public class SandboxSubmissionTest
         var companySettings = _configuration.GetSection("Companies").Get<Dictionary<string, CompanyDetails>>()
             ?? throw new InvalidOperationException("Companies configuration missing");
 
+        var lineItemFetcher = new MovexLineItemFetcher(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexLineItemFetcher>());
         var dataSource = new DirectQueryDataSource(
             Options.Create(movexDbSettings),
-            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>(),
+            lineItemFetcher);
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
             new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
@@ -375,8 +391,12 @@ public class SandboxSubmissionTest
             new CurrencyValidator(), new TotalsValidator(),
             Options.Create(new CompanySettings { Companies = companySettings }),
             new LoggerFactory().CreateLogger<MyInvoisMapper>());
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory, Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         // Step 1 — Fetch and filter to AP only
@@ -526,8 +546,12 @@ public class SandboxSubmissionTest
 
         // Verify the submission endpoint is reachable and auth works
         var httpClientFactory = CreateRealHttpClientFactory();
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory, Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         var token = await submitter.GetAccessToken(CancellationToken.None);
@@ -564,9 +588,13 @@ public class SandboxSubmissionTest
         VerifyCredentials(apiSettings);
 
         var httpClientFactory = CreateRealHttpClientFactory();
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory,
             Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         _output.WriteLine($"Endpoint: {apiSettings.BaseUrl}{apiSettings.DetailsEndpoint?.Replace("{uuid}", knownValidUUID)}");
@@ -643,9 +671,13 @@ public class SandboxSubmissionTest
 
         // --- Step 1: Get access token ---
         _output.WriteLine("--- Step 1: Acquiring OAuth token ---");
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactory, Options.Create(apiSettings),
+            new LoggerFactory().CreateLogger<MyInvoisTokenService>());
         var submitter = new MyInvoiceSubmitter(
             httpClientFactory,
             Options.Create(apiSettings),
+            tokenService,
             new LoggerFactory().CreateLogger<MyInvoiceSubmitter>());
 
         captureHandler.Label = "token";
@@ -663,9 +695,13 @@ public class SandboxSubmissionTest
         // --- Step 2: Fetch invoice from MOVEX ---
         _output.WriteLine("");
         _output.WriteLine("--- Step 2: Fetching AR invoice from MOVEX ---");
+        var lineItemFetcher = new MovexLineItemFetcher(
+            Options.Create(movexDbSettings),
+            new LoggerFactory().CreateLogger<MovexLineItemFetcher>());
         var dataSource = new DirectQueryDataSource(
             Options.Create(movexDbSettings),
-            new LoggerFactory().CreateLogger<DirectQueryDataSource>());
+            new LoggerFactory().CreateLogger<DirectQueryDataSource>(),
+            lineItemFetcher);
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
             new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());

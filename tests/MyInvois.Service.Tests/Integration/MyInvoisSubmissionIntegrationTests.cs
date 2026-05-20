@@ -253,9 +253,15 @@ public class MyInvoisSubmissionIntegrationTests
         var httpClientFactoryMock = new Mock<IHttpClientFactory>();
         httpClientFactoryMock.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactoryMock.Object,
+            Options.Create(_settings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         return new MyInvoiceSubmitter(
             httpClientFactoryMock.Object,
             Options.Create(_settings),
+            tokenService,
             _loggerMock.Object);
     }
 
