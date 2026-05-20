@@ -626,8 +626,8 @@ Day 5 (Fri):  3h →  0h  (6.8 review + merge)
 | 7.9 | Merge AP invoice SQL refactor (unstaged changes) + validate with real MOVEX data | Data | ✅ Done | developer-dotnet | 4h | P0 |
 | 7.10 | Fix DB2 ODBC smoke test — resolve parameter error, confirm real MOVEX queries work | Data | ✅ Done | developer-dotnet | 4h | P0 |
 | | **— API & Automation —** | | | | | |
-| 7.11 | Add `POST /api/v1/batch/process-range` endpoint to MyInvois.Api | API | ⏳ Ready | developer-dotnet | 4h | P1 |
-| 7.12 | Wire up batch scheduling (Windows Task Scheduler or Quartz.NET) | Ops | ⏳ Ready | Ops Lead | 8h | P1 |
+| 7.11 | Add `POST /api/v1/batch/process-range` endpoint to MyInvois.Api | API | ✅ Done | developer-dotnet | 4h | P1 |
+| 7.12 | Wire up batch scheduling (Windows Task Scheduler or Quartz.NET) | Ops | ✅ Done | developer-dotnet | 8h | P1 |
 | | **— Performance & Dry Run —** | | | | | |
 | 7.13 | Create performance test suite — baseline <5s/invoice, 100-invoice batch throughput | Testing | ⏳ Ready | developer-dotnet | 8h | P1 |
 | 7.14 | End-to-end dry run: real DB2 → mapper → validators → sandbox submission → audit log | Testing | 🔶 Partial | developer-dotnet | 8h | P0 |
@@ -677,6 +677,10 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 **7.17 ✅ Done (2026-04-02)** — LHDN classification codes are a fixed LHDN table (codes 001–045), NOT stored in MOVEX. `MITMAS.MMITCL` is a MOVEX product group code — completely unrelated. Removed MITMAS join from AR line items SQL. Default `"022"` (Others) hardcoded in `ArLineItemDto.ToLineRecord()`. Same fix applied to AP: changed `'000'` → `'022'` in SQL and DTO default. Finance team must map product groups to proper LHDN codes before go-live.
 
 **7.18 ✅ Done (2026-04-02)** — `FSLEDG.ESCUAM` is the total invoice amount from the AR ledger, but may span multiple delivery orders (ODLINE rows from one OINVOH voucher cover only one delivery). Extended `MovexInvoiceReader` totals recalculation from AP-only to both AP and AR: header totals are now overwritten by the sum of fetched ODLINE lines, ensuring `TotalExclTax` matches the UBL line items.
+
+**7.11 ✅ Done (2026-05-20, `b72d764`)** — `POST /api/v1/batch/process-range` endpoint added to `BatchController`. Validates date range (max 93 days), delegates to `IInvoiceProcessor.ProcessDateRangeBatch()`, returns `BatchProcessResponse` summary. `AddMyInvoisSubmissionPipeline()` DI extension registers full pipeline (Reader → Mapper → Submitter → Processor). `Program.cs` wired: audit logging, `MyInvoisApiSettings`, named `HttpClient("MyInvois")`, SQLite WAL init. 6 unit tests (happy path, validation guards, delegation). EF Core pinned to 8.0.27 across projects.
+
+**7.12 ✅ Done (2026-05-20, `8fd2717`)** — In-process daily batch scheduler via `DailyBatchHostedService : BackgroundService`. Fires at `BatchScheduler:DailyRunHour:DailyRunMinute` (default 02:00 local). Calls `ProcessDateRangeBatch` for yesterday (configurable `LookbackDays`). Uses `IServiceScopeFactory` — fresh DI scope per run. Exceptions swallowed — bad run never crashes IIS. `ProcessDailyBatch` now implemented (was `NotImplementedException`). `BatchSchedulerSettings` config class with `Enabled` flag (set `false` in dev). 6 unit tests: `TimeUntilNextRun` pure logic, disabled guard, date range delegation, exception isolation.
 
 **7.19 ✅ Done (2026-04-02)** — 255+ AR invoices now have line items (was 0 before fix). 3 AR invoices pass full local validation pipeline and reach LHDN pre-prod API (`preprod-api.myinvois.hasil.gov.my`). LHDN pre-prod returns error "TIN not matching" — authenticated `TaxpayerTIN: IG11953977020` matches `SupplierTIN` in UBL document. This is a LHDN pre-prod account/infrastructure issue, not a code issue. 233 unit tests continue passing (100%).
 
@@ -759,9 +763,9 @@ The XAdES signing + UBL serialization SDK integration is the longest pole. Every
 | 9.7 | Fix AP line tax: remove incorrect FGINAE lateral join → hardcode `TaxAmount = 0` | ✅ Done | `829c358` | P0 |
 | 9.8 | **AR portal Step 08 confirmed Valid** — UUID `WAFDWH4YEA7BEMFEF10X0GRK10` | ✅ Done | — | P0 |
 | 9.9 | **AP portal Step 08 Valid** — submit current-dated AP invoice, confirm portal Valid | ⏳ Pending | — | P0 |
-| 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ✅ Done | pending commit | P0 |
-| 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ✅ Done | pending commit | P0 |
-| 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ✅ Done | pending commit | P0 |
+| 9.10 | End-to-end status polling validation (poll `/documents/{uuid}/details` → audit log) | ✅ Done | `496703f` `ca4c734` | P0 |
+| 9.11 | Rejection handling validation (deliberate bad TIN → confirm error captured in audit) | ✅ Done | `f28142a` `ca4c734` `763e80a` | P0 |
+| 9.12 | Duplicate detection validation (resubmit same invoice → confirm DUP001 handled) | ✅ Done | `4c1221c` | P0 |
 | 9.13 | Volume / rate-limit validation (5–10 invoice batch → confirm Polly retry fires) | ⏳ Pending | — | P1 |
 | 9.14 | Finance clarification: domestic supplier self-billing scope | ⏳ Pending | — | P1 |
 
