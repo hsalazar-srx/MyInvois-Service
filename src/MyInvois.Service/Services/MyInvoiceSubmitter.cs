@@ -38,7 +38,8 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         IHttpClientFactory              httpClientFactory,
         IOptions<MyInvoisApiSettings>   settings,
         IMyInvoisTokenService           tokenService,
-        ILogger<MyInvoiceSubmitter>     logger)
+        ILogger<MyInvoiceSubmitter>     logger,
+        Func<int, TimeSpan>?            retrySleepProvider = null)
     {
         _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _settings          = settings?.Value   ?? throw new ArgumentNullException(nameof(settings));
@@ -46,12 +47,16 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         _logger            = logger            ?? throw new ArgumentNullException(nameof(logger));
 
         // Retry on 429 (rate limit), 500, 503. Do not retry on 400 (non-retriable error codes).
+        // retrySleepProvider is injectable so tests can pass TimeSpan.Zero to avoid real delays.
+        var sleepProvider = retrySleepProvider
+            ?? (attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt) * 5)); // 5s, 10s, 20s
+
         _retryPolicy = Policy
             .HandleResult<HttpResponseMessage>(r => IsRetriable(r.StatusCode))
             .Or<HttpRequestException>()
             .WaitAndRetryAsync(
                 retryCount: 3,
-                sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt) * 5), // 5s, 10s, 20s
+                sleepDurationProvider: sleepProvider,
                 onRetry: (outcome, timespan, retryCount, _) =>
                     _logger.LogWarning(
                         "Retry {RetryCount}/3 after {Delay}s. Reason: {Reason}",

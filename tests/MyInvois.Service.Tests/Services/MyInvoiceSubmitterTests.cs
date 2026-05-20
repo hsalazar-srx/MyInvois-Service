@@ -121,11 +121,15 @@ public class MyInvoiceSubmitterTests
             expires_in = 3600
         };
 
+        // LHDN envelope: accepted document carries the UUID inside acceptedDocuments[]
         var submissionResponse = new
         {
-            uuid = "12345678-1234-1234-1234-123456789012",
-            submissionDate = "2026-02-17T10:00:00Z",
-            status = "Valid"
+            submissionUid = "SUB-2026-00001",
+            acceptedDocuments = new[]
+            {
+                new { uuid = "12345678-1234-1234-1234-123456789012", invoiceCodeNumber = document.InvoiceNumber }
+            },
+            rejectedDocuments = Array.Empty<object>()
         };
 
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
@@ -179,161 +183,121 @@ public class MyInvoiceSubmitterTests
     }
 
     [Fact]
-    public async Task Submit_RateLimit_RetriesWithBackoff()
+    public async Task Submit_RateLimit_RetriesAndSucceedsOnSecondAttempt()
     {
-        // Arrange
+        // Polly retries on HTTP 429. Production delays are 5s/10s/20s — injected as zero here
+        // so the test completes instantly while still exercising the retry path.
         var document = CreateValidMyInvoiceDocument();
 
-        var tokenResponse = new
-        {
-            access_token = "valid-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
         var submissionResponse = new
         {
-            uuid = "12345678-1234-1234-1234-123456789012",
-            submissionDate = "2026-02-17T10:00:00Z",
-            status = "Valid"
+            submissionUid = "SUB-2026-RETRY",
+            acceptedDocuments = new[]
+            {
+                new { uuid = "12345678-1234-1234-1234-123456789012", invoiceCodeNumber = document.InvoiceNumber }
+            },
+            rejectedDocuments = Array.Empty<object>()
         };
 
         var callCount = 0;
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
 
-        // Mock token endpoint
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/connect/token")),
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
 
-        // Mock submission endpoint - first call returns 429, second succeeds
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/documentsubmissions")),
+        // First submission call → 429; second → 200 with accepted document
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
                 ItExpr.IsAny<CancellationToken>())
             .ReturnsAsync(() =>
             {
                 callCount++;
-                if (callCount == 1)
-                {
-                    return new HttpResponseMessage
-                    {
-                        StatusCode = HttpStatusCode.TooManyRequests, // 429
-                        Content = new StringContent("{\"error\":\"rate_limit_exceeded\"}")
-                    };
-                }
-
-                return new HttpResponseMessage
-                {
-                    StatusCode = HttpStatusCode.OK,
-                    Content = JsonContent.Create(submissionResponse)
-                };
+                return callCount == 1
+                    ? new HttpResponseMessage { StatusCode = HttpStatusCode.TooManyRequests, Content = new StringContent("{\"error\":\"rate_limit_exceeded\"}") }
+                    : new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(submissionResponse) };
             });
 
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
 
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
+        // Build a submitter with zero-delay retry so the test doesn't sleep for 5 seconds
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+        var sut = new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            tokenService, _loggerMock.Object,
+            retrySleepProvider: _ => TimeSpan.Zero);
 
         // Act
-        var result = await _sut.Submit(document);
+        var result = await sut.Submit(document);
 
-        // Assert
-        result.Should().NotBeNull();
+        // Assert — retry succeeded
         result.Status.Should().Be("Success");
         result.MyInvoisUUID.Should().Be("12345678-1234-1234-1234-123456789012");
 
-        // Verify retry happened (2 submission calls total)
+        // 1 initial call + 1 retry = 2 total submission requests
         httpMessageHandlerMock.Protected().Verify(
             "SendAsync",
             Times.Exactly(2),
-            ItExpr.Is<HttpRequestMessage>(req =>
-                req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
             ItExpr.IsAny<CancellationToken>());
     }
 
     [Fact]
     public async Task Submit_ServerError_RetriesUpTo3Times()
     {
-        // Arrange
+        // Polly retries on HTTP 500 up to 3 times. Zero-delay injection keeps the test fast.
         var document = CreateValidMyInvoiceDocument();
-
-        var tokenResponse = new
-        {
-            access_token = "valid-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
 
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
 
-        // Mock token endpoint
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/connect/token")),
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
 
-        // Mock submission endpoint - always returns 500
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/documentsubmissions")),
+        // Always returns 500 — Polly exhausts all 3 retries then gives up
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
                 ItExpr.IsAny<CancellationToken>())
             .ReturnsAsync(new HttpResponseMessage
             {
-                StatusCode = HttpStatusCode.InternalServerError, // 500
+                StatusCode = HttpStatusCode.InternalServerError,
                 Content = new StringContent("{\"error\":\"internal_server_error\"}")
             });
 
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
 
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+        var sut = new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            tokenService, _loggerMock.Object,
+            retrySleepProvider: _ => TimeSpan.Zero);
 
         // Act
-        var result = await _sut.Submit(document);
+        var result = await sut.Submit(document);
 
         // Assert
-        result.Should().NotBeNull();
         result.Status.Should().Be("Failed");
         result.ErrorCode.Should().NotBeNullOrEmpty();
 
-        // Verify 1 initial + 3 retries = 4 total calls (per resilience-patterns skill)
+        // 1 initial + 3 retries = 4 total submission calls
         httpMessageHandlerMock.Protected().Verify(
             "SendAsync",
             Times.Exactly(4),
-            ItExpr.Is<HttpRequestMessage>(req =>
-                req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
             ItExpr.IsAny<CancellationToken>());
     }
 
