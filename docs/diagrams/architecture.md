@@ -1,16 +1,16 @@
 # MyInvois-Service Architecture
 
-**Last Updated:** February 18, 2026 (Updated with implementation status)
-**Status:** Production  
-**Owner:** Solution Architect
+**Last Updated:** 2026-05-21
+**Status:** Production Ready (Sprint 9)
+**Owner:** Hector Salazar (Development & Integration Lead)
 
 ## Purpose
 
 This diagram shows the high-level architecture of MyInvois-Service, including:
 - Service components and their responsibilities
 - Integration with MOVEX (M3) system via IBM DB2/AS400 direct access (ADR-013)
-- Integration with MyInvois government system
-- SQL Server audit logging
+- Integration with MyInvois LHDN government platform
+- SQLite audit logging (ADR-014)
 - Data flow between systems
 
 ## Architecture Diagram
@@ -24,174 +24,176 @@ config:
 ---
 flowchart LR
   subgraph Client["Client & Orchestration"]
-    SCHEDULER["Batch Scheduler<br/>(Monthly 1st)"]
-    ADMIN["Administrator<br/>(Portal - Phase 2)"]
+    SCHEDULER["Daily Batch Scheduler\n(DailyBatchHostedService\nConfigurable time)"]
+    ADMIN["BatchController\n(POST /api/v1/batch/process-range\nManual trigger)"]
+    PORTAL["SM-Portal\n(Phase 2 UI)"]
   end
 
-  subgraph Service["MyInvois-Service"]
-    CONTROLLER["API Controller<br/>(ASP.NET Core)"]
-    PROCESSOR["Invoice Processor"]
-    READER["MOVEX Reader<br/>(DB2 Direct Access)"]
-    MAPPER["Schema Mapper<br/>(UBL 2.1)"]
-    VALIDATOR["Validator<br/>(20+ Fields)"]
-    SUBMITTER["MyInvois Submitter<br/>(OAuth 2.0)"]
-    SIGNER["E-Signer<br/>(XAdES v1.1)"]
-    LOGGER["Audit Logger"]
+  subgraph Service["MyInvois-Service (.NET 8)"]
+    PROCESSOR["InvoiceProcessor\n(Orchestrator)"]
+    DATASOURCE["DirectQueryDataSource\n(IInvoiceDataSource)"]
+    LINEFETCHER["MovexLineItemFetcher\n(Batch line fetch)"]
+    MAPPER["MyInvoisMapper\n(UBL 2.1 Transform)\nAR→Doc01 / AP→Doc11"]
+    VALIDATORS["Validators (5)\nMandatory·TIN·Date\nCurrency·Totals"]
+    TOKENSVC["MyInvoisTokenService\n(OAuth 2.0 + 1h cache)"]
+    SUBMITTER["MyInvoiceSubmitter\n(XAdES + Polly retry)"]
+    LOGGER["AuditLogger\n(EF Core 8)"]
   end
 
   subgraph Integration["External Systems"]
-    MOVEX["MOVEX (M3)<br/>Invoice Source<br/>IBM DB2/AS400"]
-    MYINVOIS["MyInvois Portal<br/>Tax Authority<br/>REST + OAuth 2.0"]
-    KEYVAULT["Azure Key Vault<br/>(Credentials)"]
+    MOVEX["MOVEX M3\nIBM DB2 / AS400\nfpledg · fsledg\nOINVOH · ODLINE"]
+    MYINVOIS["LHDN MyInvois API\npreprod-api.myinvois\n.hasil.gov.my\nOAuth 2.0 + XAdES"]
+    KEYVAULT["Azure Key Vault\n(prod credentials)"]
   end
 
   subgraph Storage["Data Storage"]
-    SQLDB["SQL Server<br/>Audit Log<br/>(7-year retention)"]
-    CACHE["Configuration<br/>(appsettings.json)"]
+    SQLITEDB["SQLite\naudit.db (WAL mode)\n7-year retention\n(ADR-014)"]
+    SECRETS["User Secrets\n(dev credentials)"]
   end
 
-  subgraph Infrastructure["Infrastructure"]
-    RETRY["Retry Logic<br/>(Exponential Backoff)"]
-    QUEUE["Retry Queue<br/>(Failed Items)"]
-    HEALTH["Health Checks"]
-  end
-
-  SCHEDULER --> CONTROLLER
-  ADMIN -.->|Phase 2| CONTROLLER
-  CONTROLLER --> PROCESSOR
-  PROCESSOR --> READER
-  PROCESSOR --> VALIDATOR
+  SCHEDULER --> PROCESSOR
+  ADMIN --> PROCESSOR
+  PORTAL -.->|Phase 2| ADMIN
+  PROCESSOR --> DATASOURCE
+  DATASOURCE --> LINEFETCHER
+  DATASOURCE --> MOVEX
+  LINEFETCHER --> MOVEX
   PROCESSOR --> MAPPER
+  MAPPER --> VALIDATORS
+  PROCESSOR --> TOKENSVC
+  TOKENSVC --> MYINVOIS
   PROCESSOR --> SUBMITTER
-  SUBMITTER --> SIGNER
+  SUBMITTER --> TOKENSVC
   SUBMITTER --> MYINVOIS
-  PROCESSOR --> LOGGER
-  READER --> MOVEX
   SUBMITTER --> KEYVAULT
-  SUBMITTER --> RETRY
-  RETRY --> QUEUE
-  LOGGER --> SQLDB
-  PROCESSOR --> CACHE
-  HEALTH --> Service
+  PROCESSOR --> LOGGER
+  LOGGER --> SQLITEDB
+  TOKENSVC --> SECRETS
+  DATASOURCE --> SECRETS
 ```
 
 ## Component Descriptions
 
 ### Client & Orchestration Layer
-- **Batch Scheduler**: Triggers monthly batch processing on 1st of month (Windows Task Scheduler)
-- **Administrator Portal**: (Phase 2) Web UI for monitoring, error recovery, submission status
+
+- **DailyBatchHostedService**: .NET BackgroundService. Fires `ProcessDateRangeBatch` at the configured hour/minute. Controlled by `BatchScheduler:Enabled` (in `src/MyInvois.Api/appsettings.json`). Setting `Enabled: false` skips all scheduled runs; manual trigger still works.
+- **BatchController**: ASP.NET Core controller at `POST /api/v1/batch/process-range`. Protected by API Key. Used for UAT testing and on-demand reruns.
+- **SM-Portal**: (Phase 2) SM-Portal integration to trigger and monitor submissions from the web UI.
 
 ### MyInvois-Service (Core Business Logic)
-- **API Controller**: ASP.NET Core controller exposing batch processing endpoint
-- **Invoice Processor**: Orchestrates the entire pipeline (read → validate → map → submit); 60% implemented
-- **MOVEX Reader**: ✅ Implemented (80%): Retrieves invoices from M3/MOVEX via direct DB2/AS400 queries (ADR-013); uses DataAccess strategy pattern (DirectQuery/StoredProcedure); tables: fpledg, fsledg, fgledg on schemas mvxcdta/mvxc300; 30s command timeout; NuGet: Net.IBM.Data.Db2, Dapper
-- **Schema Mapper**: In Progress (75%): Transforms MOVEX invoice format to UBL 2.1 (MyInvois requirement)
-- **Validators**: In Progress (70%): 5 validator classes (MandatoryFields, TIN, Date, Currency, Totals); validates 20+ mandatory MyInvois fields; collects all errors (not fail-fast)
-- **MyInvois Submitter**: ✅ Implemented (95%): Submits validated invoices to MyInvois API; manages OAuth tokens (1-hour cache); XAdES v1.1 signing; exponential backoff retry policy; rate limiting (100 req/min)
-- **E-Signer**: Uses official MyInvois SDK to create XAdES v1.1 digital signatures (integrated in MyInvois Submitter)
-- **Audit Logger**: Interface defined; Database writes for all submission attempts to SQL Server audit log (Week 2 implementation)
+
+- **InvoiceProcessor**: Orchestrates the full pipeline for a date range: fetch → transform → validate → submit → audit. Returns `BatchResult { TotalInvoices, SuccessCount, FailedCount, SkippedCount }`.
+- **DirectQueryDataSource**: Fetches invoice headers via ODBC+Dapper. AR join path: `FSLEDG → OINVOH (ESVONO=UHVONO) → ODLINE (UHIVNO=UBIVNO)` (ADR-016). AP: direct `fpledg` query. Schema selected per `ActiveCompanyCodes` (mvxcdta=CMP100, mvxc300=CMP300).
+- **MovexLineItemFetcher**: Batch-fetches all `ODLINE` records for a voucher set. Called from `DirectQueryDataSource` to avoid N+1 line queries.
+- **MyInvoisMapper**: Transforms `MovexInvoice` → `MyInvoiceDocument`. AR invoices (`InvoiceType = "Sales"`) → `DocumentTypeCode = "01"` with our company as Supplier. AP invoices (`InvoiceType = "Purchase"`) → `DocumentTypeCode = "11"` (self-billed) with external vendor as Supplier and our company as Buyer.
+- **Validators (5)**: `MandatoryFieldsValidator`, `TINValidator`, `DateValidator`, `CurrencyValidator`, `TotalsValidator`. All non-fail-fast — collect all errors before returning.
+- **MyInvoisTokenService**: Isolated OAuth token service. Manages client credentials flow, caches token for 1 hour (SemaphoreSlim-protected refresh). Endpoint: `preprod-api.myinvois.hasil.gov.my/connect/token`.
+- **MyInvoiceSubmitter**: Signs invoices (XAdES v1.1, custom — not LHDN SDK), applies `DecimalNormalizer` to match LHDN's re-serialization, submits to `/api/v1.0/documentsubmissions`. Polly retry: 3 attempts, 5s × 2^attempt backoff. Reads UUID from `acceptedDocuments[0].uuid`. Injectable `retrySleepProvider` for test speed.
+- **AuditLogger**: Writes `SubmissionResult` records to SQLite (`audit.db`) via EF Core 8 with WAL mode. Supports duplicate detection and failed-submission query.
 
 ### External Systems
-- **MOVEX (M3)**: Source of invoice data; IBM DB2/AS400 direct access; command timeout: 30 seconds; NuGet: Net.IBM.Data.Db2, Dapper
-- **MyInvois Portal**: Tax authority submission endpoint; rate limit: 100 req/min; OAuth 2.0
-- **Azure Key Vault**: Stores OAuth credentials, e-signature keys; never in source code
+
+- **MOVEX M3**: Source of truth for invoice data. IBM DB2 on AS400 (IBM i 7.4). Read-only access. CONO=100 = Production, CONO=300 = Development/UAT.
+- **LHDN MyInvois API**: Tax authority submission endpoint. Single host (`preprod-api.myinvois.hasil.gov.my`) for both OAuth tokens and document submission. Rate limits: 300 req/min (submission), 600 req/min (status). Step 08 async validation runs 2–5 min after HTTP 200.
+- **Azure Key Vault**: Production credential store for OAuth credentials and API keys. Dev uses `dotnet user-secrets`.
 
 ### Data Storage
-- **SQL Server Audit Database**: Immutable audit log of all submissions (7-year retention)
-- **Configuration**: appsettings.json stores connection strings, timeout values, feature flags
 
-### Infrastructure
-- **Retry Logic**: Exponential backoff (5s, 10s, 20s, 40s max)
-- **Retry Queue**: Failed items queued for manual retry; prevents duplicate submission
-- **Health Checks**: Monitor dependencies (MOVEX, MyInvois, Database)
+- **SQLite (audit.db)**: Immutable audit log via EF Core 8, WAL mode, 7-year retention (ADR-014). Replaces SQL Server — lightweight, no server dependency, suitable for single-instance deployment.
+- **User Secrets**: Dev/UAT credentials (ClientId, ClientSecret, TIN, connection strings). Never committed to source control.
 
 ---
 
 ## Key Design Decisions
 
-### Why Batch (Not Real-Time)?
-✅ Finance operations are monthly-based (month-end close)  
-✅ Volume (600-1,100/month) doesn't justify real-time complexity  
-✅ Easier to control, test, and audit
+### Why DB2 Direct Access (Not M3 REST API)?
+✅ M3 MI transaction API does not expose all required invoice fields (ADR-013)
+✅ Direct ODBC access provides full control over join strategy
+✅ No additional middleware layer; lower latency
 
-### Why Queue-Based Retry?
-✅ Handles transient failures gracefully  
-✅ Allows manual intervention before retry  
-✅ Reduces duplicate submissions  
-✅ Enables audit trail of all retry attempts
+### Why SQLite (Not SQL Server) for Audit?
+✅ Single-instance deployment on SRXWEBAPP1 (ADR-014)
+✅ Eliminates SQL Server licence dependency for this service
+✅ WAL mode handles concurrent reads safely
+✅ 7-year retention achievable with standard SQLite tooling
 
-### Why OAuth 2.0?
-✅ MyInvois SDK requires it  
-✅ More secure than Basic Auth  
-✅ Token caching reduces authentication overhead
+### Why Daily Batch (Not Real-Time)?
+✅ Finance operations are month-end focused
+✅ ~600-1100 invoices/month doesn't justify real-time complexity
+✅ Daily batch allows controlled retry window
 
-### Why SQL Server (Not Files)?
-✅ Workspace standard (WORKSPACE_RULES.md)  
-✅ Better query performance for compliance reports  
-✅ Supports 7-year retention with proper indexing
+### Why Custom XAdES (Not LHDN SDK)?
+✅ LHDN SDK targets a different runtime profile
+✅ Custom implementation gives full control over digest/signature ordering
+✅ All four signature bugs resolved (2026-05-13); production-ready
+
+### Why Separate MyInvoisTokenService?
+✅ Isolates OAuth concerns from submission logic
+✅ Independently testable (single responsibility)
+✅ Reusable if SM-Portal adds direct LHDN integration
 
 ---
 
 ## Data Flow Through Components
 
-1. **Scheduler triggers** → Calls API Controller
-2. **Controller** → Calls Invoice Processor
-3. **Processor** → Reads invoices from MOVEX (Reader)
-4. **Reader returns** → Invoice data in MOVEX format
-5. **Processor** → Validates invoices (Validator)
-6. **Processor** → Maps to UBL 2.1 format (Mapper)
-7. **Processor** → Signs invoices (Signer uses Key Vault)
-8. **Processor** → Submits to MyInvois (Submitter)
-9. **Submitter** → Handles OAuth tokens (Key Vault)
-10. **Submitter** → On success: Write to audit log (Logger)
-11. **Submitter** → On failure: Queue for retry + Alert
+1. Scheduler fires (or `BatchController` receives request)
+2. `InvoiceProcessor.ProcessDateRangeBatch(from, to)` called
+3. `DirectQueryDataSource.GetInvoicesByDateRangeAsync` queries MOVEX DB2
+4. `MovexLineItemFetcher` batch-fetches line items
+5. For each `MovexInvoice`:
+   a. `MyInvoisMapper.Transform(invoice)` → `MyInvoiceDocument` + validation
+   b. If validation errors → `AuditLogger.LogSubmissionAsync(Skipped)`
+   c. If valid → `MyInvoiceSubmitter.Submit(document)`
+   d. Submitter calls `MyInvoisTokenService.GetAccessTokenAsync()`
+   e. Submitter signs (XAdES) and POSTs to LHDN
+   f. On 200 → read UUID from `acceptedDocuments[0].uuid`
+   g. On 429/5xx → Polly retries (up to 3)
+   h. `AuditLogger.LogSubmissionAsync(Success/Failed)`
+6. Return `BatchResult` summary
 
 ---
 
 ## Error Handling
 
 ### MOVEX DB2 Connection Fails
-- Retry: 3 attempts, 5-second delays on transient DB2 failures
-- Alert: Operations Manager
-- Fallback: Manual CSV import (emergency)
+- ODBC connection timeout: 60s command timeout
+- Retry: 3 attempts on transient errors (Polly)
+- Batch aborted; audit log entry with error
 
 ### Validation Fails
-- Collect all errors (don't fail-fast)
-- Write error report to audit log
-- Email error report to finance team
-- Item marked as "Validation Failed" (not submitted)
+- All 5 validators run (non-fail-fast)
+- Invoice marked Skipped; errors written to audit log
+- Not submitted to LHDN
 
 ### MyInvois Submission Fails
-- Non-retryable (400, 401, 404): Write to audit, alert finance
-- Retryable (408, 500, 503): Queue for retry with exponential backoff
-- Rate-limit (429): Throttle subsequent requests; retry after backoff
+- Non-retryable (400, 401, DS101, DS302): Write to audit, mark Failed
+- Retryable (429, 500, 503): Polly retries 3 times with exponential backoff
+- After 3 retries: mark Failed; eligible for rerun via BatchController
 
-### Database Unavailable
-- Fallback: Log to file temporarily
-- Alert: Database Admin
-- Retry: Connection retry logic with 30s timeout
+### SQLite Unavailable
+- `AuditLogger` throws; `InvoiceProcessor` catches and logs to Serilog
+- Submission may succeed but audit record lost — alert condition
 
 ---
 
 ## Scalability Considerations
 
-### Current Scale (600-1,100 invoices/month)
-- Single-instance service
-- Batch processes in ~30 minutes
-- Sequential submission (600ms per invoice)
-- SQL Server auditing sufficient
+### Current Scale (Sprint 9)
+- ~100 AR + 500-1000 AP invoices/month
+- Single-instance on SRXWEBAPP1
+- Sequential submission (Polly-managed rate limiting)
+- SQLite audit sufficient for single-instance
 
-### Future Scale (Multi-plant, 10K+ invoices/month)
-- Phase 4: Parallel submission strategy
-- Phase 4: Tenant-based isolation
-- Phase 4: Database partitioning by plant
-- Phase 4: Batch job optimization
+### Future Scale (Phase 2+)
+- SM-Portal integration for real-time submission monitoring
+- Azure Key Vault for credential management
+- Application Insights distributed tracing
+- If volume grows 10x: migrate audit to SQL Server (interface unchanged)
 
 ---
 
 ## Related Diagrams
-- [data-flow.md](data-flow.md) - Detailed data movement through system
-- [integration-sequence.md](integration-sequence.md) - Batch processing timeline
-- [auth-flow.md](auth-flow.md) - OAuth 2.0 authentication details
-- [workflow-process.md](workflow-process.md) - Finance team workflow
-- [deployment-topology.md](deployment-topology.md) - Infrastructure layout
+
+- [data-flow.md](data-flow.md) — Detailed data movement through system
+- [integration-sequence.md](integration-sequence.md) — Batch processing sequence
+- [auth-flow.md](auth-flow.md) — OAuth 2.0 + XAdES signing details

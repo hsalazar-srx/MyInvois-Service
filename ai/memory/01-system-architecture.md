@@ -1,10 +1,10 @@
 # MyInvois-Service - System Architecture
 
-**Last Updated**: 2026-02-27
-**Status**: MVAI Iteration 1 (Active)
-**Version**: 1.1
+**Last Updated**: 2026-05-21
+**Status**: Sprint 9 (Active)
+**Version**: 2.0
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ### High-Level Data Flow
 
@@ -14,42 +14,61 @@
 │             MOVEX Database (IBM DB2 on AS/400)                  │
 └─────────────┬───────────────────────────────────────────────────┘
               │
-              │ (DB2 Connection)
+              │ (ODBC / System.Data.Odbc)
               │
 ┌─────────────▼───────────────────────────────────────────────────┐
-│          fpledg/fsledg/fgledg Tables                            │
-│    Schemas: mvxcdta (CMP100) / mvxc300 (CMP300)                │
+│   DB Tables: fpledg / fsledg / OINVOH / ODLINE / MITMAS        │
+│   Schemas: mvxcdta (CMP100-Prod) / mvxc300 (CMP300-Dev/UAT)   │
 └─────────────┬───────────────────────────────────────────────────┘
               │
-              │ (SQL/Stored Procedure)
+              │ (DirectQueryDataSource + Dapper)
               │
 ┌─────────────▼───────────────────────────────────────────────────┐
-│         MyInvois-Service (Worker Service, .NET 8.0)             │
+│         MyInvois-Service (ASP.NET Core Worker, .NET 8.0)        │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │  1. MovexInvoiceReader                                      ││
-│  │     └─ Fetches invoices from MOVEX database (DB2)          ││
+│  │  1. DirectQueryDataSource (IInvoiceDataSource)              ││
+│  │     └─ Fetches RawInvoiceRecord + lines via ODBC+Dapper    ││
+│  │     └─ AR join path: FSLEDG→OINVOH→ODLINE                 ││
+│  │     └─ AP: fpledg direct query                             ││
 │  │                                                              ││
-│  │  2. MyInvoiceMapper                                         ││
-│  │     └─ Transforms to MyInvois schema (UBL 2.1)             ││
-│  │     └─ Orchestrates validation                             ││
+│  │  2. MovexLineItemFetcher                                    ││
+│  │     └─ Batch-fetches line items for a date range           ││
+│  │     └─ Separate from header fetch for performance          ││
 │  │                                                              ││
-│  │  3. Validators (5 classes)                                 ││
-│  │     ├─ MandatoryFieldsValidator                           ││
-│  │     ├─ TINValidator                                        ││
-│  │     ├─ DateValidator                                       ││
-│  │     ├─ CurrencyValidator                                   ││
-│  │     └─ TotalsValidator                                     ││
+│  │  3. MyInvoisMapper (IMyInvoisMapper)                        ││
+│  │     └─ Transforms MovexInvoice → MyInvoiceDocument         ││
+│  │     └─ AR (type "Sales") → DocumentTypeCode "01"           ││
+│  │     └─ AP (type "Purchase") → DocumentTypeCode "11"        ││
+│  │     └─ Orchestrates 5 validators                           ││
 │  │                                                              ││
-│  │  4. MyInvoiceSubmitter                                      ││
-│  │     ├─ OAuth token management                              ││
-│  │     ├─ XAdES signature generation                          ││
-│  │     └─ MyInvois API submission                             ││
+│  │  4. Validators (5 classes)                                  ││
+│  │     ├─ MandatoryFieldsValidator                            ││
+│  │     ├─ TINValidator                                         ││
+│  │     ├─ DateValidator                                        ││
+│  │     ├─ CurrencyValidator                                    ││
+│  │     └─ TotalsValidator                                      ││
 │  │                                                              ││
-│  │  5. InvoiceProcessor (Orchestrator)                         ││
-│  │     └─ Coordinates batch processing                        ││
+│  │  5. MyInvoisTokenService (IMyInvoisTokenService)            ││
+│  │     └─ OAuth 2.0 client credentials flow                   ││
+│  │     └─ Token caching (1-hour TTL)                          ││
+│  │     └─ Endpoint: preprod-api.myinvois.hasil.gov.my         ││
 │  │                                                              ││
-│  │  6. AuditLogger                                             ││
-│  │     └─ Logs all submissions to SQL Server                  ││
+│  │  6. MyInvoiceSubmitter                                      ││
+│  │     └─ XAdES digital signature (custom, not LHDN SDK)      ││
+│  │     └─ Submits to LHDN API via Polly retry (3 attempts)    ││
+│  │     └─ Reads acceptedDocuments[].uuid from response        ││
+│  │     └─ retrySleepProvider: injectable for tests            ││
+│  │                                                              ││
+│  │  7. InvoiceProcessor (Orchestrator)                         ││
+│  │     └─ ProcessDateRangeBatch(from, to, ct)                 ││
+│  │     └─ Returns BatchResult with counts                      ││
+│  │                                                              ││
+│  │  8. DailyBatchHostedService (BackgroundService)            ││
+│  │     └─ Fires ProcessDateRangeBatch at configured time       ││
+│  │     └─ Controlled by BatchScheduler:Enabled                ││
+│  │                                                              ││
+│  │  9. AuditLogger                                             ││
+│  │     └─ Persists to SQLite via EF Core 8 (WAL mode)        ││
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────┬───────────────────────────────────────────────────┘
               │
@@ -57,20 +76,20 @@
               │                 │
               │                 │ (HTTPS REST)
               │                 │
-    (SQL)     │       ┌─────────▼─────────────┐
+    (SQLite)  │       ┌─────────▼─────────────┐
     ▼         │       │  MyInvois API         │
    ┌──────────┴──────┐│  (LHDNM Platform)     │
-   │  SQL Server     │└───────────────────────┘
-   │  SRX_AuditLog   │
-   │  dbo.AuditLog   │
-   │  (7-year        │
-   │   retention)    │
+   │  SQLite         │└───────────────────────┘
+   │  audit.db       │  preprod-api.myinvois
+   │  (WAL mode)     │  .hasil.gov.my
+   │  7-year         │
+   │  retention      │
    └─────────────────┘
 ```
 
 ---
 
-## 🧩 Skills-Based Architecture Alignment
+## Skills-Based Architecture Alignment
 
 This project follows the centralized skills registry in `C:\Projects\.github\skills\manifest.json`.
 
@@ -78,345 +97,310 @@ This project follows the centralized skills registry in `C:\Projects\.github\ski
 
 | Skill ID | Category | Usage |
 |----------|----------|-------|
-| `integration/m3-transaction-builder` | Integration | NO LONGER PRIMARY (ADR-013) |
-| `integration/m3-response-parser` | Integration | NO LONGER PRIMARY (ADR-013) |
-| `integration/movex-db2-data-source` | Integration | DB2 data access strategy pattern (DataAccess layer) |
-| `architecture/resilience-patterns` | Architecture | Retry/backoff policies (MyInvoiceSubmitter) |
-| `architecture/audit-logging-framework` | Architecture | SQL audit schema + retention (AuditLogger) |
-| `architecture/configuration-management` | Architecture | Settings + secrets binding |
+| `integration/movex-db2-data-source` | Integration | DB2 direct access via System.Data.Odbc + Dapper |
+| `integration/myinvois-validator` | Integration | 5 validator classes, LHDN spec compliance |
+| `architecture/resilience-patterns` | Architecture | Polly retry + circuit breaker (MyInvoiceSubmitter) |
+| `architecture/audit-logging-framework` | Architecture | SQLite audit schema + 7-year retention (ADR-014) |
+| `architecture/configuration-management` | Architecture | BatchSchedulerSettings, MovexDbSettings, MyInvoisApiSettings |
 | `architecture/clean-architecture` | Architecture | Service boundaries + layering |
 | `architecture/dotnet-api-design` | Architecture | Interface/DTO conventions |
 
-### Proposed Skills (Gaps)
-
-| Proposed Skill ID | Purpose |
-|-------------------|---------|
-| `integration/myinvois-document-builder` | MOVEX → UBL 2.1 transformation |
-| `integration/myinvois-validator` | LHDNM validation rules |
-| `integration/oauth-token-manager` | OAuth token caching/refresh |
-| `integration/xades-signer` | XAdES v1.1 signing |
-| `integration/api-rate-limiter` | 100 req/min enforcement |
-
-**Skills Audit:** See [00-Skills Audit](00-skills-audit.md) for detailed mapping and gaps.
-
 ---
 
-## 📦 Component Architecture
+## Component Architecture
 
-### 1. **MovexInvoiceReader** (Data Source Layer)
+### 1. **DirectQueryDataSource** (Data Source Layer)
 
-**Purpose**: Fetch invoices from MOVEX database (DB2 on AS/400) via IInvoiceDataSource + IPartyDataProvider
+**Purpose**: Fetch invoice headers and lines from MOVEX DB2 via ODBC
 
 **Responsibilities**:
-- Query MOVEX DB2 tables (fpledg, fsledg, fgledg)
-- Map RawInvoiceRecord DTOs with party enrichment
-- Handle DB2 connection errors with retries
-- Convert MOVEX date/time format to ISO 8601
+- AP header query: `fpledg` (schema = mvxcdta/mvxc300 per `ActiveCompanyCodes`)
+- AR header query: `fsledg → OINVOH → ODLINE` join path (ADR-016; 96% coverage)
+- Batch line item fetch via `MovexLineItemFetcher`
+- Convert MOVEX numeric date fields (YYYYMMDD integer) to ISO 8601
 
-**Key Methods**:
-```csharp
-Task<List<MovexInvoice>> GetPendingInvoices(DateTime fromDate)
-Task<MovexInvoice?> GetInvoiceById(string invoiceNumber)
-Task<List<MovexInvoice>> GetInvoicesByDateRange(DateTime from, DateTime to)
+**AR line item join path** (ADR-016, 2026-04-02):
 ```
+FSLEDG → OINVOH (ESVONO = UHVONO) → ODLINE (UHIVNO = UBIVNO)
+```
+Do NOT use OINVOL — `OIIVNO` column does not exist in IBM i 7.4.
 
 **Configuration**:
-- `MovexDbSettings.ConnectionString`: DB2 connection string (from User Secrets)
-- `MovexDbSettings.DataSourceStrategy`: DirectQuery or StoredProcedure
-- `MovexDbSettings.SchemaCmp100`: Schema for CMP100 (mvxcdta)
-- `MovexDbSettings.SchemaCmp300`: Schema for CMP300 (mvxc300)
-- `MovexDbSettings.PartyDataSource`: Placeholder or MovexMaster
+- `MovexDb.ConnectionString`: ODBC DSN (from User Secrets)
+- `MovexDb.ActiveCompanyCodes`: `["100"]` prod, `["100"]` UAT (never `["300"]` in production)
+- `MovexDb.ArMinYear`: Minimum AR invoice year filter (2025 in dev)
 
 ---
 
-### 2. **MyInvoiceMapper** (Transformation Layer)
+### 2. **MovexLineItemFetcher** (Data Source Layer)
 
-**Purpose**: Transform MOVEX invoices to MyInvois schema
+**Purpose**: Batch-fetch line items for a date range, separate from header queries
 
 **Responsibilities**:
-- Map MOVEX fields to MyInvois UBL 2.1 format
-- Orchestrate all 5 validators
-- Collect validation errors
-- Calculate totals & taxes
+- Fetches `ODLINE` records for all voucher numbers in a date range
+- Builds line item dictionary keyed by voucher number
+- Called by `DirectQueryDataSource.GetInvoicesByDateRangeAsync`
 
-**Key Methods**:
+---
+
+### 3. **MyInvoisMapper** (Transformation Layer)
+
+**Purpose**: Transform `MovexInvoice` DTOs to `MyInvoiceDocument` (UBL 2.1 subset)
+
+**Responsibilities**:
+- Map MOVEX fields to MyInvois schema
+- AR (InvoiceType = "Sales") → `DocumentTypeCode = "01"`, our company = Supplier
+- AP (InvoiceType = "Purchase") → `DocumentTypeCode = "11"` (self-billed), external vendor = Supplier, our company = Buyer
+- Orchestrate all 5 validators (non-fail-fast, collect all errors)
+- Date normalization: MOVEX YYYYMMDD → ISO `yyyy-MM-dd` / `HH:mm:ss`
+
+**Key Method**:
 ```csharp
 MyInvoiceDocument Transform(MovexInvoice invoice)
-bool ValidateDocument(MyInvoiceDocument document, out List<ValidationError> errors)
 ```
 
 **Validation Pipeline**:
 ```
-Transform → Mandatory Fields → TIN → Date → Currency → Totals → Result
+Transform → MandatoryFields → TIN → Date → Currency → Totals → Result
 ```
-
-**Error Handling**: 
-- Invalid invoices NOT submitted (caught before API call)
-- Validation errors collected in `ValidationErrors` list
-- Errors logged for manual review
 
 ---
 
-### 3. **Validators** (Validation Layer)
+### 4. **Validators** (Validation Layer)
 
 Five specialized validators, each handling one concern:
 
-#### **MandatoryFieldsValidator**
-- Checks all 20+ mandatory fields
-- Validates field lengths & formats
-- Ensures required fields are non-null
-
-#### **TINValidator**
-- Validates 12-digit TIN format
-- Checks numeric-only constraint
-- Optional: API lookup (cached 1 hour)
-
-#### **DateValidator**
-- Rejects placeholder dates ("N/A", "0000-00-00")
-- Validates ISO 8601 format (YYYY-MM-DD)
-- Ensures date is not in future
-- Converts to UTC
-
-#### **CurrencyValidator**
-- Validates ISO 4217 currency codes (MYR, USD, SGD, etc.)
-- Enforces exchange rate requirement (non-MYR currencies)
-- Validates rate precision (max 6 decimal places)
-- Rate > 0
-
-#### **TotalsValidator**
-- Verifies sum of line amounts = invoice total
-- Checks tax calculations
-- Validates: TotalInclTax = TotalExclTax + TotalTax
-- Rounding tolerance: ±1 cent
+| Validator | Key Rules |
+|-----------|-----------|
+| `MandatoryFieldsValidator` | 20+ mandatory fields, non-null/non-empty |
+| `TINValidator` | 12-digit Malaysian TIN format |
+| `DateValidator` | ISO 8601, rejects "0000-00-00" / "N/A", not in future |
+| `CurrencyValidator` | ISO 4217, exchange rate required for non-MYR |
+| `TotalsValidator` | `TotalInclTax = TotalExclTax + TotalTax`, ±1 cent tolerance |
 
 ---
 
-### 4. **MyInvoiceSubmitter** (Integration Layer)
+### 5. **MyInvoisTokenService** (Authentication Layer)
 
-**Purpose**: Submit validated invoices to MyInvois API
+**Purpose**: Manage OAuth 2.0 tokens for LHDN API access
 
 **Responsibilities**:
-- Manage OAuth tokens (1-hour cache)
-- Generate XAdES v1.1 digital signatures
-- Submit XML documents to MyInvois
-- Handle rate limiting (100 req/min)
-- Extract MyInvois UUID from response
-- Classify errors (retriable vs. no-retry)
+- Client credentials flow (`/connect/token`)
+- Token caching with 1-hour TTL (expires-at based, not timer)
+- Single endpoint for both token and API: `preprod-api.myinvois.hasil.gov.my`
+- Thread-safe (SemaphoreSlim for refresh)
 
-**Key Methods**:
+**Key Interface**:
 ```csharp
-Task<SubmissionResult> Submit(MyInvoiceDocument document)
-Task<string?> GetSubmissionStatus(string myInvoisUUID)
-Task<string> GetAccessToken()
+Task<string> GetAccessTokenAsync()
 ```
 
-**API Endpoints**:
-- `POST /connect/token` - OAuth token
-- `POST /api/v1.0/documentsubmissions` - Submit invoice
-- `GET /api/v1.0/documents/{uuid}/details` - Get status (Phase 2)
+---
+
+### 6. **MyInvoiceSubmitter** (Integration Layer)
+
+**Purpose**: Submit validated and signed invoices to LHDN MyInvois API
+
+**Responsibilities**:
+- XAdES digital signature (custom implementation — LHDN SDK not used)
+- Decimal normalization via `DecimalNormalizer` JsonConverter (LHDN strips trailing zeros on re-parse)
+- Polly retry policy: 3 attempts, exponential backoff (5s × 2^attempt)
+- Read UUID from `acceptedDocuments[0].uuid` in response envelope
+- Optional `retrySleepProvider` constructor parameter (test injection)
+
+**LHDN Response Envelope**:
+```json
+{
+  "submissionUid": "SUB-2026-00001",
+  "acceptedDocuments": [{ "uuid": "...", "invoiceCodeNumber": "..." }],
+  "rejectedDocuments": []
+}
+```
 
 **Error Classification**:
 
 | Error Code | Type | Action |
 |-----------|------|--------|
-| 400, 401, DS101, DS302 | No-Retry | Log + Manual review |
-| 429, 500, 503 | Retriable | Auto-retry (3 attempts) |
+| 400, 401, DS101, DS302 | No-Retry | Log + manual review |
+| 429, 500, 503 | Retriable | Auto-retry (3 attempts, exponential backoff) |
 
 ---
 
-### 5. **InvoiceProcessor** (Orchestrator)
+### 7. **InvoiceProcessor** (Orchestrator)
 
-**Purpose**: Coordinate end-to-end batch processing
+**Purpose**: Coordinate end-to-end batch processing for a date range
 
-**Responsibilities**:
-- Schedule monthly batch (1st of month)
-- Fetch pending invoices
-- Transform to MyInvois format
-- Submit in batches (respecting rate limits)
-- Aggregate results
-
-**Key Methods**:
+**Key Method**:
 ```csharp
-Task<BatchResult> ProcessMonthlyBatch(CancellationToken cancellationToken)
-Task<SubmissionResult> ProcessSingleInvoice(string invoiceId)
-Task<SubmissionResult> RetryFailedInvoice(string submissionId)
+Task<BatchResult> ProcessDateRangeBatch(DateTime from, DateTime to, CancellationToken ct)
 ```
-
-**Batch Configuration**:
-- Sales: 1 batch of 100 invoices
-- Purchase: 10-20 batches of 50 invoices
-- Delay: 0.6s between batches (rate limit: 100 req/min)
 
 **Execution Flow**:
 ```
-1. Get pending invoices from MOVEX database
+1. GetInvoicesByDateRangeAsync(from, to)
 2. For each invoice:
-   a. Transform to MyInvois format
-   b. Validate (all 5 validators)
-   c. If valid: submit to MyInvois
-   d. If invalid: skip (log error for review)
-3. For each batch of 50:
-   a. Submit all
-   b. Wait 0.6s
-4. Log all submissions to audit log
-5. Return BatchResult (summary)
+   a. Transform via MyInvoisMapper
+   b. Run 5 validators
+   c. If valid: Submit via MyInvoiceSubmitter
+   d. If invalid: Log as Skipped
+3. Log each result via AuditLogger
+4. Return BatchResult { TotalInvoices, SuccessCount, FailedCount, SkippedCount }
 ```
 
 ---
 
-### 6. **AuditLogger** (Compliance Layer)
+### 8. **DailyBatchHostedService** (Scheduling Layer)
 
-**Purpose**: Log all submissions for audit trail & compliance
+**Purpose**: Trigger nightly batch processing at a configured time
 
-**Responsibilities**:
-- Insert submission records to `dbo.AuditLog`
-- Capture MyInvois UUID, status, errors
-- Store request/response payloads
-- Query failed submissions for retry
-- Detect duplicate submissions
+**Controlled by** `BatchScheduler` section in `src/MyInvois.Api/appsettings.json`:
+```json
+{
+  "BatchScheduler": {
+    "Enabled": true,
+    "DailyRunHour": 2,
+    "DailyRunMinute": 0,
+    "LookbackDays": 1
+  }
+}
+```
+
+Setting `Enabled: false` disables the scheduled run entirely. Manual triggering is always available via `POST /api/v1/batch/process-range` regardless of this setting.
+
+---
+
+### 9. **AuditLogger** (Compliance Layer)
+
+**Purpose**: Persist all submission results for compliance and retry tracking
+
+**Storage**: SQLite via EF Core 8, WAL mode, file path from `ConnectionStrings:AuditLog` (ADR-014)
 
 **Key Methods**:
 ```csharp
-Task LogSubmission(SubmissionResult result, MyInvoiceDocument? document)
-Task<List<SubmissionResult>> GetFailedSubmissions(int maxResults)
-Task<bool> IsInvoiceAlreadySubmitted(string invoiceNumber)
+Task LogSubmissionAsync(SubmissionResult result)
+Task<bool> IsAlreadySubmittedAsync(string invoiceNumber)
+Task<List<SubmissionResult>> GetFailedSubmissionsAsync(int maxResults)
 ```
 
-**Audit Fields**:
-- `InvoiceNumber`: MOVEX invoice ID
-- `MyInvoisUUID`: MyInvois document UUID
-- `MyInvoisStatus`: Submission status
-- `ErrorMessage`: Error details
-- `ValidationErrors`: JSON array of validation failures
-- `Duration`: Time taken (ms)
-- `Timestamp`: When submitted (UTC)
-
-**Retention**: 7 years (SQL Server policy)
+**Retention**: 7 years
 
 ---
 
-## 🔄 Data Flow (Monthly Batch)
+## Configuration Architecture
 
-```
-1. SCHEDULER (midnight on 1st of month)
-   └─> Triggers InvoiceProcessor.ProcessMonthlyBatch()
+Configuration is split across three files by concern:
 
-2. FETCH (MOVEX Reader via IInvoiceDataSource)
-   └─> Query DB2: SELECT FROM {schema}.fpledg/fsledg WHERE epacdt >= @fromDate
-       ├─ Status = "Open"
-       ├─ FromDate = 1st of previous month
-       └─ Returns: ~100 sales + 500-1000 purchase
+| File | Scope | Contains |
+|------|-------|----------|
+| `appsettings.json` (root) | Service defaults | `Logging`, `ConnectionStrings`, `MovexDb`, `MyInvoisApi`, `Companies`, `ForeignPartyDefaults` |
+| `appsettings.Development.json` | Dev overrides only | Debug log level, dev DB path, ArMinYear=2025, preprod API URL |
+| `src/MyInvois.Api/appsettings.json` | Host-layer only | `AllowedHosts`, `ApiKeys`, `BatchScheduler` |
 
-3. TRANSFORM (Mapper + Validators)
-   └─ For each invoice:
-      ├─ Transform to UBL 2.1
-      ├─ Run 5 validators
-      ├─ If valid: prepare for submission
-      └─ If invalid: log error, skip
+**Dead config sections (removed)**: `BatchProcessing`, `Processing`, `Validation` — these were never registered in DI. `BatchScheduler` is the only real scheduler config.
 
-4. SUBMIT (MyInvoiceSubmitter)
-   └─ Sales batch (100 invoices):
-      ├─ Get OAuth token
-      ├─ Generate XAdES signature
-      └─ POST /api/v1.0/documentsubmissions (all 100)
-   
-   └─ Purchase batches (50 invoices each):
-      ├─ Batch 1: Submit + 0.6s delay
-      ├─ Batch 2: Submit + 0.6s delay
-      ├─ ... (up to 20 batches)
-      └─ Batch N: Submit (no delay on last)
-
-5. AUDIT (Logger)
-   └─ For each submission:
-      ├─ INSERT dbo.AuditLog
-      ├─ Status: Success / Failed / Skipped
-      ├─ MyInvoisUUID: From response
-      └─ ErrorMessage: If any
-
-6. RESULT
-   └─ Return BatchResult:
-      ├─ TotalInvoices: ~600-1100
-      ├─ SuccessCount: ~570-1045
-      ├─ FailedCount: ~10-20
-      ├─ SkippedCount: ~20-30 (invalid)
-      └─ SuccessRate: ≥95%
+### Root appsettings.json (service defaults)
+```json
+{
+  "MovexDb": {
+    "ConnectionString": "{from User Secrets}",
+    "DataSourceStrategy": "DirectQuery",
+    "SchemaCmp100": "mvxcdta",
+    "SchemaCmp300": "mvxc300",
+    "ActiveCompanyCodes": ["100"],
+    "CommandTimeoutSeconds": 60,
+    "ArMinYear": 0
+  },
+  "MyInvoisApi": {
+    "BaseUrl": "https://api.myinvois.hasil.gov.my",
+    "IdentityBaseUrl": "https://api.myinvois.hasil.gov.my",
+    "Environment": "production",
+    "ClientId": "{from User Secrets}",
+    "ClientSecret": "{from User Secrets}",
+    "TIN": "{from User Secrets}"
+  },
+  "Companies": [
+    {
+      "Code": "100",
+      "TIN": "{from User Secrets}",
+      "BRN": "{from User Secrets}",
+      "Name": "Scanfil APAC Sdn Bhd",
+      "Phone": "6072319006"
+    }
+  ]
+}
 ```
 
 ---
 
-## 🔐 Security Considerations
+## Security Considerations
 
 ### Authentication & Authorization
 
 1. **MOVEX Database (DB2)**
-   - Connection string from User Secrets (not hardcoded)
-   - DB2 connection encryption enabled
+   - ODBC connection string from User Secrets (never hardcoded)
    - Read-only access to MOVEX schemas
+   - CONO isolation: `mvxcdta` (CMP100) or `mvxc300` (CMP300) — never hardcoded
 
 2. **MyInvois API**
-   - OAuth 2.0 (Client Credentials flow)
-   - Credentials from User Secrets (not hardcoded)
+   - OAuth 2.0 (Client Credentials flow) via `MyInvoisTokenService`
+   - Credentials from User Secrets (dev) / Azure Key Vault (prod)
    - Token caching (1-hour TTL)
-   - Rate limiting: 100 req/min (enforced by MyInvois)
 
-### Data Protection
+3. **BatchController API**
+   - API Key authentication (`ApiKeys:Primary` / `ApiKeys:Admin`)
+   - Keys from User Secrets / Azure Key Vault
 
-1. **In Transit**
-   - MyInvois API calls over HTTPS (TLS 1.3 minimum)
-   - DB2 connections encrypted
-
-2. **At Rest**
-   - SQL Server audit logs encrypted (TDE)
-   - Sensitive fields masked in logs (OAuth tokens, certificates)
-   - 7-year retention with archive to cold storage (Phase 2)
-
-3. **Digital Signature**
-   - XAdES v1.1 format
-   - Certificate issued by trusted CA
-   - MyInvois SDK handles cryptography (no custom implementation)
+### Digital Signature (XAdES)
+- Custom XAdES v1.1 implementation (not LHDN SDK)
+- Signature rules (all bugs resolved 2026-05-13):
+  1. `docDigest = SHA256(Minify(invoice body with NO UBLExtensions AND NO Signature))`
+  2. `propsDigest = SHA256(Minify(full QualifyingProperties object))`
+  3. UBLExtensions inserted before Signature element
+  4. `DecimalNormalizer` JsonConverter strips trailing zeros before signing (LHDN re-serializes)
 
 ---
 
-## 📊 Data Model (Simplified)
+## Data Model (Simplified)
 
-### Input: MovexInvoice (from MOVEX Database)
+### Input: MovexInvoice (from MOVEX)
 ```csharp
 public class MovexInvoice
 {
     public string InvoiceNumber { get; set; }
-    public string InvoiceDate { get; set; }
-    public string InvoiceType { get; set; } // Sales/Purchase
+    public string InvoiceDate { get; set; }     // YYYYMMDD format
+    public string InvoiceType { get; set; }     // "Sales" or "Purchase"
     public string CompanyCode { get; set; }
     public string VoucherNumber { get; set; }
     public string CurrencyCode { get; set; }
     public decimal ExchangeRate { get; set; }
     public decimal TotalExclTax { get; set; }
     public decimal TotalTax { get; set; }
-    public InvoiceParty Supplier { get; set; }
-    public InvoiceParty Buyer { get; set; }
+    public decimal TotalInclTax { get; set; }
+    public InvoiceParty? Supplier { get; set; }
+    public InvoiceParty? Buyer { get; set; }
     public List<InvoiceLine> Lines { get; set; }
 }
 ```
 
-### Processing: MyInvoiceDocument (Transformed to UBL 2.1)
+### Processing: MyInvoiceDocument (UBL 2.1 subset)
 ```csharp
 public class MyInvoiceDocument
 {
-    public string Id { get; set; } // Internal GUID
     public string InvoiceNumber { get; set; }
-    public string IssueDate { get; set; } // YYYY-MM-DD
-    public string IssueTime { get; set; } // HH:MM:SS
+    public string DocumentTypeCode { get; set; }  // "01" AR, "11" AP
+    public string IssueDate { get; set; }          // yyyy-MM-dd
+    public string IssueTime { get; set; }          // HH:mm:ss
     public string CurrencyCode { get; set; }
     public string SupplierTIN { get; set; }
     public string SupplierName { get; set; }
     public string SupplierBRN { get; set; }
+    public string BuyerTIN { get; set; }
     public string BuyerName { get; set; }
-    public string? BuyerTIN { get; set; }
     public decimal TotalExclTax { get; set; }
     public decimal TotalTax { get; set; }
     public decimal TotalInclTax { get; set; }
+    public decimal PayableAmount { get; set; }
     public List<MyInvoiceLine> Lines { get; set; }
-    public string? Signature { get; set; } // XAdES v1.1
     public List<ValidationError> ValidationErrors { get; set; }
 }
 ```
@@ -425,128 +409,60 @@ public class MyInvoiceDocument
 ```csharp
 public class SubmissionResult
 {
-    public string SubmissionId { get; set; }
     public string InvoiceNumber { get; set; }
-    public string Status { get; set; } // Success/Failed/Skipped
+    public string Status { get; set; }          // "Success" / "Failed" / "Skipped"
     public string? MyInvoisUUID { get; set; }
     public string? MyInvoisStatus { get; set; }
     public string? ErrorCode { get; set; }
     public string? ErrorMessage { get; set; }
-    public int RetryCount { get; set; }
     public DateTime SubmittedAt { get; set; }
+    public long DurationMs { get; set; }
 }
 ```
 
 ---
 
-## ⚙️ Configuration & Deployment
-
-### Appsettings.json
-
-```json
-{
-  "MovexDb": {
-    "ConnectionString": "{from User Secrets}",
-    "DataSourceStrategy": "DirectQuery",
-    "SchemaCmp100": "mvxcdta",
-    "SchemaCmp300": "mvxc300",
-    "ActiveCompanyCodes": ["100", "300"],
-    "CommandTimeoutSeconds": 60,
-    "MaxPoolSize": 10,
-    "PartyDataSource": "Placeholder",
-    "ApInvoiceStoredProc": "",
-    "ArInvoiceStoredProc": "",
-    "ArDivision": "L",
-    "ArTransCode": "10",
-    "ArCustomerStatus": "20",
-    "ArMinYear": 0,
-    "SupplierTinColumn": "",
-    "SupplierBrnColumn": "",
-    "CustomerTinColumn": "",
-    "CustomerBrnColumn": ""
-  },
-  "MyInvoisApi": {
-    "BaseUrl": "https://api.myinvois.hasil.gov.my",
-    "Environment": "sandbox", // or "production"
-    "ClientId": "{from User Secrets}",
-    "ClientSecret": "{from User Secrets}",
-    "TIN": "000000000000"
-  },
-  "BatchProcessing": {
-    "SalesBatchSize": 100,
-    "PurchaseBatchSize": 50,
-    "DelayBetweenBatchesMs": 600,
-    "MaxRetries": 3,
-    "RetryDelaySeconds": 5
-  },
-  "Processing": {
-    "EnableBatchProcessing": true,
-    "MonthlySubmissionDay": 1,
-    "SubmissionWindowHours": 2
-  },
-  "Validation": {
-    "TINCache_TTL_Hours": 1,
-    "RequireExchangeRateForNonMYR": true,
-    "AllowNullBuyerTIN": true,
-    "DecimalPlaces": 2
-  }
-}
-```
-
-### Deployment Targets
-
-| Environment | Purpose | Host | Database |
-|-------------|---------|------|----------|
-| **Staging** | Pre-prod testing | SRXAPP-STAGING | SRX_AuditLog (staging) |
-| **Production** | Live submission | SRXAPP-PROD | SRX_AuditLog (prod) |
-
----
-
-## 🚀 Technology Stack
+## Technology Stack
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| **Runtime** | .NET Core | 8.0 |
+| **Runtime** | .NET | 8.0 |
 | **Language** | C# | 12 |
-| **DB2 Driver** | Net.IBM.Data.Db2 | Latest |
+| **DB2 Driver** | System.Data.Odbc | 9.0.2 |
 | **ORM** | Dapper | Latest |
 | **JSON** | System.Text.Json | .NET 8.0 |
-| **Crypto** | MyInvois SDK | Latest |
-| **Database** | SQL Server | 2019+ |
-| **ORM** | Entity Framework Core | 8.0 |
+| **Resilience** | Polly | 8.x |
+| **Audit DB** | SQLite (EF Core 8) | WAL mode |
 | **Logging** | Serilog | 4.0+ |
-| **Testing** | xUnit + Moq | Latest |
+| **Testing** | xUnit + Moq + FluentAssertions | Latest |
 
 ---
 
-## 📈 Scalability Considerations
+## Scalability Considerations
 
 ### Phase 1 (Current)
-- Monthly batch: ~600-1100 invoices
-- Single instance execution
-- In-memory caching (OAuth tokens)
-- No distributed tracing
+- Daily batch: ~100 AR + 500-1000 AP invoices/month
+- Single instance execution on SRXWEBAPP1
+- In-memory token caching (1-hour TTL)
+- SQLite audit storage (WAL mode, sufficient for single-instance)
 
 ### Phase 2 (Future)
-- Daily/hourly batches (if needed)
-- Cloud-ready (Azure Functions)
-- Redis cache for scalability
+- Real-time submission via SM-Portal trigger
+- Azure Key Vault for credential management
 - Distributed tracing (Application Insights)
-- Event-driven architecture
 
 ---
 
-## 🔗 Related Documents
+## Related Documents
 
-- [00-Product Vision](00-product-vision.md) - Vision & objectives
 - [02-Data Model](02-data-model.md) - Database schema details
 - [03-MyInvois Requirements](03-myinvois-requirements.md) - Validation rules
 - [04-API Integration](04-api-integration.md) - API specs & integration details
-- [05-Deployment Guide](05-deployment-guide.md) - Deployment instructions
+- [09-Implementation Decisions](09-implementation-decisions.md) - ADR log
+- [10-Testing Strategy](10-testing-strategy.md) - Test structure and coverage
 
 ---
 
-**Owner**: Architecture Team  
-**Last Review**: 2026-02-16
-**Next Review**: 2026-03-16
-
+**Owner**: Hector Salazar (Development & Integration Lead)
+**Last Review**: 2026-05-21
+**Next Review**: 2026-06-30
