@@ -79,7 +79,7 @@ Error: Certificate_InValid_For_Usage
 **Diagnosis:**
 ```powershell
 # Check if certificate expiry alert was triggered
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 & sqlite3 $db "SELECT AuditId, Action, Timestamp FROM AuditLogs WHERE Action LIKE '%Certificate%Expired%' ORDER BY Timestamp DESC LIMIT 10;"
 
 # Check monitoring logs
@@ -219,7 +219,7 @@ Error: Connection refused or service crashes on startup
 
 2. **Check SQLite audit log is accessible:**
    ```powershell
-   $db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+   $db = "E:\data\audit.db"
    Test-Path $db
    & sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;"
    ```
@@ -358,23 +358,19 @@ Too many requests (100 per minute limit)
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 # Check submission rate per minute (last 5 minutes)
 & sqlite3 $db "SELECT strftime('%H:%M', Timestamp) AS Minute, COUNT(*) AS SubmissionCount FROM AuditLogs WHERE Category='MyInvois' AND datetime(Timestamp) > datetime('now', '-5 minutes') GROUP BY Minute ORDER BY Minute DESC;"
 ```
 
 **Solutions:**
-1. Increase delay between batches in `appsettings.json`:
-   ```json
-   "BatchProcessing": {
-     "DelayBetweenBatchesMs": 1000  // Increase from 600
-   }
-   ```
-2. Reduce batch size:
-   ```json
-   "PurchaseBatchSize": 25  // Reduce from 50
-   ```
-3. Spread submission over longer period
+1. The Polly retry policy in `MyInvoiceSubmitter` automatically handles 429 responses
+   with exponential backoff (3 attempts: 5s, 10s, 20s) — no config change needed
+   for transient rate-limit hits.
+2. If sustained rate limiting occurs, reduce the batch date range via the
+   `POST /api/v1/batch/process-range` endpoint to spread submissions across multiple runs.
+3. Check submission volume: LHDN limits are 300 req/min (submission), 600 req/min (status).
+   At ~100 AR + 500-1000 AP/month the service operates well within these limits.
 
 ---
 
@@ -386,7 +382,7 @@ Invoice already submitted successfully
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 # Query duplicate submissions
 & sqlite3 $db "SELECT InvoiceNumber, COUNT(*) AS SubmissionCount FROM AuditLogs WHERE Category='MyInvois' AND Status='Success' GROUP BY InvoiceNumber HAVING COUNT(*) > 1;"
 ```
@@ -411,7 +407,7 @@ Supplier TIN, Invoice Date, or other required field not found
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 # Find invoices with validation errors
 & sqlite3 $db "SELECT InvoiceNumber, ValidationErrors, Timestamp FROM AuditLogs WHERE Status='Failed' AND ValidationErrors IS NOT NULL ORDER BY Timestamp DESC LIMIT 10;"
 ```
@@ -434,7 +430,7 @@ TIN does not match Malaysian format (12 alphanumeric)
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 # Find invalid TINs from recent entries
 & sqlite3 $db "SELECT DISTINCT InvoiceNumber, ValidationErrors, Timestamp FROM AuditLogs WHERE ValidationErrors LIKE '%TIN%' AND datetime(Timestamp) > datetime('now', '-7 days');"
 ```
@@ -454,7 +450,7 @@ Non-MYR currency without exchange rate
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 # Find missing exchange rates
 & sqlite3 $db "SELECT InvoiceNumber, CurrencyCode, ExchangeRate, Timestamp FROM AuditLogs WHERE CurrencyCode != 'MYR' AND (ExchangeRate IS NULL OR ExchangeRate = 1.0) AND datetime(Timestamp) > datetime('now', '-7 days');"
 ```
@@ -480,7 +476,7 @@ OR: Microsoft.Data.Sqlite.SqliteException: unable to open database file
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 
 # Check file exists
 Test-Path $db
@@ -512,7 +508,7 @@ OR: Microsoft.Data.Sqlite.SqliteException: database disk image is malformed
 
 **Diagnosis:**
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 & sqlite3 $db "PRAGMA integrity_check;"  # Expected: ok
 ```
 
@@ -534,7 +530,7 @@ $db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
 ### View Failed Submissions
 
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 
 # Query failed submissions (most recent first)
 & sqlite3 $db "SELECT AuditId, InvoiceNumber, ErrorMessage, StatusCode, RetryCount, Timestamp FROM AuditLogs WHERE Status='Failed' ORDER BY Timestamp DESC LIMIT 20;"
@@ -548,7 +544,7 @@ $db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
 **Manual retry via audit log:**
 
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 
 # Step 1: Identify failed submission
 & sqlite3 $db "SELECT AuditId, InvoiceNumber, ErrorMessage FROM AuditLogs WHERE Status='Failed' AND InvoiceNumber='INV-2026-00001';"
@@ -673,7 +669,7 @@ Get-DistributionGroup -Identity "infrastructure@company.com"
 ```powershell
 # Run this every morning
 
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 
 # 1. Certificate still valid
 $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
@@ -696,7 +692,7 @@ Get-Service -Name "MyInvois-Service" -ErrorAction SilentlyContinue
 ### Monthly Metrics
 
 ```powershell
-$db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
+$db = "E:\data\audit.db"
 # Monthly summary
 & sqlite3 $db "SELECT strftime('%Y-%m', Timestamp) AS Month, COUNT(*) AS TotalInvoices, SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS SuccessCount, SUM(CASE WHEN Status='Failed' THEN 1 ELSE 0 END) AS FailedCount, ROUND(SUM(CASE WHEN Status='Success' THEN 1.0 ELSE 0 END) * 100 / COUNT(*), 1) AS SuccessRate FROM AuditLogs WHERE Action='MyInvois_Submit' GROUP BY Month ORDER BY Month DESC;"
 ```
@@ -730,8 +726,8 @@ $db = "C:\inetpub\apps\MyInvois.Api\data\audit.db"
 
 ---
 
-**Last Updated:** March 18, 2026
-**Owned By:** Operations Team  
+**Last Updated:** 2026-05-25
+**Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 
 ---

@@ -1,7 +1,8 @@
 # MyInvois-Service — Local Setup Guide
 
-**Duration:** 5-10 minutes  
-**Prerequisites:** .NET 8.0 SDK, IBM DB2 iSeries Access ODBC driver, Windows domain account
+**Duration:** 5-10 minutes
+**Last Updated:** 2026-05-25
+**Prerequisites:** .NET 8.0 SDK, IBM i Access ODBC Driver, Windows domain account
 
 ---
 
@@ -58,16 +59,21 @@ dotnet user-secrets set "MovexDb:ConnectionString" "Server=YOUR_AS400_SERVER;Dat
 ```powershell
 dotnet user-secrets set "MyInvoisApi:ClientId" "YOUR_CLIENT_ID"
 dotnet user-secrets set "MyInvoisApi:ClientSecret" "YOUR_CLIENT_SECRET"
+dotnet user-secrets set "MyInvoisApi:CertificatePassword" "YOUR_CERT_PASSWORD"
 ```
 
-**Where to get it:** MyInvois sandbox portal (myinvois.hasil.gov.my)
+**Where to get it:** Pre-prod ClientId is `a777bc19-e8b9-4adb-b793-7c8b64368a5a`. Secret and cert password from IT Ops secure store.
+
+> **LHDN endpoint note:** Both OAuth token and API submission use the **same host**:
+> `preprod-api.myinvois.hasil.gov.my`. Do not use `sandbox.myinvois.*` (browser-only)
+> or `identity.myinvois.*` (does not exist for M2M).
 
 ### Set Audit Log SQLite Path (optional)
 
 The audit database defaults to `./data/audit.db` relative to the application's content root. Override only if you need a specific path:
 
 ```powershell
-dotnet user-secrets set "ConnectionStrings:AuditLog" "Data Source=C:\inetpub\wwwroot\MyInvois\data\audit.db"
+dotnet user-secrets set "ConnectionStrings:AuditLog" "Data Source=E:\data\audit.db"
 ```
 
 For local development the default (`Data Source=./data/audit.db`) is already set in `appsettings.Development.json` — no secret needed.
@@ -107,7 +113,7 @@ $decrypted = ConvertTo-SecureString $encrypted
 dotnet user-secrets list
 ```
 
-**Expected:** 4 secrets configured (MovexDb:ConnectionString, MyInvoisApi:ClientId, MyInvoisApi:ClientSecret, plus certificate password via Credential Manager). `ConnectionStrings:AuditLog` is only needed if overriding the default SQLite path.
+**Expected:** 5 secrets configured: `MovexDb:ConnectionString`, `MyInvoisApi:ClientId`, `MyInvoisApi:ClientSecret`, `MyInvoisApi:CertificatePassword`, plus any API keys (`ApiKeys:Primary`, `ApiKeys:Admin`). `ConnectionStrings:AuditLog` is only needed if overriding the default SQLite path (`./data/audit.db`).
 
 ---
 
@@ -504,9 +510,10 @@ dotnet user-secrets list
 
 Once local setup is complete:
 1. Read [README.md](../README.md) for project overview
-2. Review [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) for validation rules & traceability
-3. Start implementing Week 2 development tasks
-4. Run unit tests: `dotnet test`
+2. Review [ai/memory/01-system-architecture.md](../ai/memory/01-system-architecture.md) for current architecture
+3. Review [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) for validation rules & traceability
+4. Run unit/integration/E2E tests (276 total): `dotnet test --filter "Category!=Smoke"`
+5. To run the full pipeline smoke test (real DB2 + LHDN pre-prod): see [SETUP_USER_SECRETS.md](SETUP_USER_SECRETS.md)
 
 ---
 
