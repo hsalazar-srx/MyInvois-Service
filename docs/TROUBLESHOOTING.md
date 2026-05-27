@@ -5,6 +5,49 @@
 
 ---
 
+## Startup & DI Errors
+
+### App returns 500 on first request but health endpoint works
+
+**Symptom:** `GET /api/v1/health` returns 200. `POST /api/v1/batch/process-range` returns 500 with empty body.
+
+**Cause:** A DI registration is missing. The health endpoint is a `MapGet` lambda (no DI), so it works. Controllers fail when the DI container tries to resolve a missing dependency at first use.
+
+**Fix:** Check the stdout log or Serilog log for `Unable to resolve service for type`:
+```powershell
+Get-ChildItem "C:\inetpub\wwwroot\MyInvois-Api\logs\stdout*.log" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1 |
+    Get-Content | Select-Object -Last 100
+```
+
+The `ValidateOnBuild = true` setting (added 2026-05-27) means the app will now **crash at startup** instead of at first request if a registration is missing. If the app pool starts but the health endpoint also 404s, check the stdout log for `AggregateException: Some services are not able to be constructed`.
+
+---
+
+### App returns 404 for all routes except /health (IIS)
+
+**Symptom:** Health endpoint works. All controller routes return 404. IIS logs show 404 (not 401/500).
+
+**Causes and fixes:**
+
+| Cause | Fix |
+|-------|-----|
+| Wrong build deployed (old version without controllers) | Re-publish from latest source; verify `MyInvois.Api.dll` date |
+| App crashed on startup; IIS holds the port but .NET is dead | Check stdout log; fix startup error; recycle app pool |
+| Wrong port in request (e.g. 5000 instead of 5051) | Use port **5051** — `http://localhost:5051/api/v1/...` |
+
+**UAT IIS site:** port `5051`, root site (no path prefix), physical path `C:\inetpub\wwwroot\MyInvois-Api`.
+
+---
+
+### 404 on batch endpoint but 401 appeared once without API key
+
+This confirms the endpoint exists and auth works. The 404s are from a **stale build** on the server
+(old DLL without `BatchController`). Re-publish from the latest source.
+
+---
+
 ## 🔐 Certificate Issues
 
 ### "Certificate File Not Found"
@@ -726,7 +769,7 @@ $db = "E:\data\audit.db"
 
 ---
 
-**Last Updated:** 2026-05-25
+**Last Updated:** 2026-05-27
 **Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 
