@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using MyInvois.Service.Configuration;
 using MyInvois.Service.Data;
 using MyInvois.Service.Services;
+using MyInvois.Service.Validators;
 
 // Uses skill: architecture/configuration-management v1.0+
 
@@ -73,9 +74,16 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddMyInvoisSubmissionPipeline(this IServiceCollection services)
     {
+        services.AddMemoryCache();
+
         // Token service is Singleton: shares the in-memory OAuth cache across all scopes.
         services.AddSingleton<IMyInvoisTokenService, MyInvoisTokenService>();
         services.AddScoped<IMovexInvoiceReader, MovexInvoiceReader>();
+        services.AddScoped<IMandatoryFieldsValidator, MandatoryFieldsValidator>();
+        services.AddScoped<IDateValidator, DateValidator>();
+        services.AddScoped<ICurrencyValidator, CurrencyValidator>();
+        services.AddScoped<ITotalsValidator, TotalsValidator>();
+        services.AddScoped<ITINValidator, TINValidator>();
         services.AddScoped<IMyInvoisMapper, MyInvoisMapper>();
         services.AddScoped<IMyInvoiceSubmitter, MyInvoiceSubmitter>();
         services.AddScoped<IInvoiceProcessor, InvoiceProcessor>();

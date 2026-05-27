@@ -51,6 +51,12 @@ builder.Services.AddMyInvoisSubmissionPipeline();
 builder.Services.Configure<BatchSchedulerSettings>(builder.Configuration.GetSection("BatchScheduler"));
 builder.Services.AddHostedService<DailyBatchHostedService>();
 
+builder.Host.UseDefaultServiceProvider(o =>
+{
+    o.ValidateOnBuild = true;
+    o.ValidateScopes  = true;
+});
+
 var app = builder.Build();
 
 // Initialize SQLite audit database: create schema and enable WAL mode (ADR-014).
