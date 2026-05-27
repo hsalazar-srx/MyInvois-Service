@@ -1,7 +1,8 @@
 # MyInvois-Service — Local Setup Guide
 
-**Duration:** 5-10 minutes  
-**Prerequisites:** .NET 8.0 SDK, SQL Server, IBM DB2 driver (Net.IBM.Data.Db2), Windows domain account
+**Duration:** 5-10 minutes
+**Last Updated:** 2026-05-25
+**Prerequisites:** .NET 8.0 SDK, IBM i Access ODBC Driver, Windows domain account
 
 ---
 
@@ -58,20 +59,24 @@ dotnet user-secrets set "MovexDb:ConnectionString" "Server=YOUR_AS400_SERVER;Dat
 ```powershell
 dotnet user-secrets set "MyInvoisApi:ClientId" "YOUR_CLIENT_ID"
 dotnet user-secrets set "MyInvoisApi:ClientSecret" "YOUR_CLIENT_SECRET"
+dotnet user-secrets set "MyInvoisApi:CertificatePassword" "YOUR_CERT_PASSWORD"
 ```
 
-**Where to get it:** MyInvois sandbox portal (myinvois.hasil.gov.my)
+**Where to get it:** Pre-prod ClientId is `a777bc19-e8b9-4adb-b793-7c8b64368a5a`. Secret and cert password from IT Ops secure store.
 
-### Set SQL Server Connection String
+> **LHDN endpoint note:** Both OAuth token and API submission use the **same host**:
+> `preprod-api.myinvois.hasil.gov.my`. Do not use `sandbox.myinvois.*` (browser-only)
+> or `identity.myinvois.*` (does not exist for M2M).
+
+### Set Audit Log SQLite Path (optional)
+
+The audit database defaults to `./data/audit.db` relative to the application's content root. Override only if you need a specific path:
 
 ```powershell
-dotnet user-secrets set "ConnectionStrings:AuditLog" "Server=YOUR_SQL_SERVER;Database=SRX_AuditLog;Integrated Security=true;TrustServerCertificate=true;Connection Timeout=30;"
+dotnet user-secrets set "ConnectionStrings:AuditLog" "Data Source=E:\data\audit.db"
 ```
 
-**Example:** 
-```powershell
-dotnet user-secrets set "ConnectionStrings:AuditLog" "Server=SQLSERVER01;Database=SRX_AuditLog;Integrated Security=true;TrustServerCertificate=true;"
-```
+For local development the default (`Data Source=./data/audit.db`) is already set in `appsettings.Development.json` — no secret needed.
 
 ### Set Certificate Password (Production Only)
 
@@ -108,41 +113,27 @@ $decrypted = ConvertTo-SecureString $encrypted
 dotnet user-secrets list
 ```
 
-**Expected:** 5 secrets configured (MovexDb:ConnectionString, MyInvoisApi:ClientId, MyInvoisApi:ClientSecret, ConnectionStrings:AuditLog, plus certificate password via Credential Manager)
+**Expected:** 5 secrets configured: `MovexDb:ConnectionString`, `MyInvoisApi:ClientId`, `MyInvoisApi:ClientSecret`, `MyInvoisApi:CertificatePassword`, plus any API keys (`ApiKeys:Primary`, `ApiKeys:Admin`). `ConnectionStrings:AuditLog` is only needed if overriding the default SQLite path (`./data/audit.db`).
 
 ---
 
-## Step 3: Create SQL Server Database
+## Step 3: Verify Audit Log Database (Auto-Created)
 
-### Create Database
+The SQLite audit database (`audit.db`) is **created automatically** on first startup via EF Core `EnsureCreated`. No manual schema setup is required.
 
-```powershell
-# Connect to your SQL Server instance
-sqlcmd -S YOUR_SQL_SERVER
-
-# In SQLCMD prompt:
-CREATE DATABASE SRX_AuditLog;
-GO
-EXIT
-```
-
-### Create Schema & Tables
+### Verify After First Run
 
 ```powershell
-# Run schema script (from MyInvois-Service root folder)
-sqlcmd -S YOUR_SQL_SERVER -i .\src\Database\create-audit-table.sql -d SRX_AuditLog
-sqlcmd -S YOUR_SQL_SERVER -i .\src\Database\create-audit-views.sql -d SRX_AuditLog
+# Check the file was created
+Test-Path ".\data\audit.db"
+
+# Verify WAL mode and row count using sqlite3.exe
+$db = ".\data\audit.db"
+& sqlite3 $db "PRAGMA journal_mode;"           # Expected: wal
+& sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;" # Expected: 0
 ```
 
-**Expected:** "Audit Log schema setup completed."
-
-### Verify Database
-
-```powershell
-sqlcmd -S YOUR_SQL_SERVER -d SRX_AuditLog -Q "SELECT COUNT(*) FROM [dbo].[AuditLog];"
-```
-
-**Expected:** Returns 0 (empty table)
+> **Note:** `sqlite3.exe` can be downloaded from https://sqlite.org/download.html or installed via `winget install SQLite.SQLite`. It is only needed for manual inspection — the service itself does not require it.
 
 ---
 
@@ -298,6 +289,141 @@ curl http://localhost:5001/health
 
 ---
 
+## Step 7: Configure and Test MyInvois.Api
+
+`MyInvois.Api` is the internal HTTP API host that exposes invoice data to SM-Portal. It runs on `http://localhost:5051` (IIS-only; not exposed externally).
+
+> **Prerequisites:** Complete Steps 1–4 first. MyInvois.Api shares the MOVEX DB2 connection but has its own User Secrets project (`src/MyInvois.Api/`).
+
+### Step 7.1: Configure API Keys
+
+API keys are **required** — all endpoints except `/api/v1/health` return `401 Unauthorized` without them.
+
+Navigate to the Api project directory and set secrets:
+
+```powershell
+cd src/MyInvois.Api
+
+# Primary key — used by SM-Portal and internal callers
+dotnet user-secrets set "ApiKeys:Primary" "$(New-Guid)"
+
+# Admin key — elevated access for operations/monitoring (optional but recommended)
+dotnet user-secrets set "ApiKeys:Admin" "$(New-Guid)"
+
+# MOVEX DB2 connection (same value as the service-level secret, scoped to this project)
+dotnet user-secrets set "MovexDb:ConnectionString" "DSN=AS400;UID=YOUR_USER;PWD=YOUR_PASSWORD;"
+```
+
+> **Note:** `$(New-Guid)` generates a random GUID. Note down both values — SM-Portal will need `ApiKeys:Primary` configured as well.
+
+**Verify secrets:**
+```powershell
+dotnet user-secrets list
+# Expected: ApiKeys:Primary, ApiKeys:Admin, MovexDb:ConnectionString
+```
+
+### Step 7.2: Run MyInvois.Api Locally
+
+```powershell
+# From src/MyInvois.Api/
+dotnet run
+```
+
+**Expected Output:**
+```
+[HH:mm:ss INF] [] Now listening on: http://localhost:5051
+[HH:mm:ss INF] [] Application started.
+```
+
+### Step 7.3: Test Health Endpoint (No Auth Required)
+
+The health endpoint is exempt from API key authentication — used by IIS application pool health checks.
+
+```powershell
+curl http://localhost:5051/api/v1/health
+```
+
+**Expected:** HTTP 200 OK
+```json
+{"status":"healthy","timestamp":"2026-03-18T..."}
+```
+
+**Failure cases:**
+- Connection refused → Api is not running; check `dotnet run` output for startup errors
+- HTTP 503 → `ApiKeys:Primary` not configured; run Step 7.1
+
+### Step 7.4: Test Authenticated Invoice Request
+
+All invoice endpoints require the `X-API-Key` header. Use the `ApiKeys:Primary` value set in Step 7.1.
+
+```powershell
+# Store key in variable (retrieve from user-secrets list output)
+$apiKey = "YOUR_PRIMARY_KEY_HERE"
+
+# Fetch invoices for a date range (both AP and AR)
+curl -H "X-API-Key: $apiKey" `
+     "http://localhost:5051/api/v1/invoices?fromDate=2026-01-01&toDate=2026-01-31&type=ALL"
+```
+
+**Expected:** HTTP 200 OK
+```json
+{
+  "totalCount": 12,
+  "fromDate": "2026-01-01",
+  "toDate": "2026-01-31",
+  "items": [...]
+}
+```
+
+**Filter by type:**
+```powershell
+# AP invoices only
+curl -H "X-API-Key: $apiKey" `
+     "http://localhost:5051/api/v1/invoices?fromDate=2026-01-01&toDate=2026-01-31&type=AP"
+
+# AR invoices only
+curl -H "X-API-Key: $apiKey" `
+     "http://localhost:5051/api/v1/invoices?fromDate=2026-01-01&toDate=2026-01-31&type=AR"
+```
+
+**Test unauthorized access (confirm auth is working):**
+```powershell
+# No key — should return 401
+curl -i http://localhost:5051/api/v1/invoices?fromDate=2026-01-01&toDate=2026-01-31
+
+# Wrong key — should return 401
+curl -i -H "X-API-Key: wrong-key" `
+     "http://localhost:5051/api/v1/invoices?fromDate=2026-01-01&toDate=2026-01-31"
+```
+
+**Expected for both:** HTTP 401 Unauthorized
+```json
+{"code":"UNAUTHORIZED","message":"Invalid or missing API key.","correlationId":"...","timestamp":"..."}
+```
+
+**Test admin key access:**
+```powershell
+$adminKey = "YOUR_ADMIN_KEY_HERE"
+curl -H "X-Admin-Key: $adminKey" `
+     "http://localhost:5051/api/v1/invoices?fromDate=2026-01-01&toDate=2026-01-31"
+```
+
+**Expected:** HTTP 200 OK (same response as primary key)
+
+### Troubleshooting MyInvois.Api
+
+| Issue | Solution |
+|-------|----------|
+| HTTP 401 on all requests | Set `ApiKeys:Primary` via `dotnet user-secrets` in `src/MyInvois.Api/` |
+| HTTP 503 on all requests | `ApiKeys:Primary` is empty/not configured — check `dotnet user-secrets list` |
+| HTTP 502 on invoice requests | DB2 connection failed — check `MovexDb:ConnectionString` secret in `src/MyInvois.Api/` |
+| Connection refused on port 5051 | Api not running; start with `dotnet run` from `src/MyInvois.Api/` |
+| Empty `items` array | No MOVEX data for date range — try a wider range or check DB2 connectivity (Step 4) |
+
+> **IIS Deployment:** For UAT/Production IIS setup, see [Phase 11 of the Deployment Guide](../ai/memory/05-deployment-guide.md#phase-11-myinvoisapi-iis-site-setup). The IIS app pool is `MyInvoisApi`, the site binds to `http://localhost:5051`.
+
+---
+
 ## Configuration Files
 
 ### appsettings.json (Production/Default)
@@ -307,7 +433,7 @@ curl http://localhost:5001/health
 
 ### appsettings.Development.json (Local Overrides)
 - Overrides for local development
-- Uses local SQL Server instance (`(local)`)
+- Uses local SQLite database (`./data/audit.db`)
 - Lower log levels, sandbox API endpoint
 
 ### Key Configuration Options
@@ -370,7 +496,7 @@ dotnet user-secrets list
 | Issue | Solution |
 |-------|----------|
 | "User secrets are not configured" | Run `dotnet user-secrets init` first |
-| "Cannot connect to SQL Server" | Check server name, instance, and integrated auth enabled |
+| "`audit.db` not created" | Run the service once — EF Core creates it on startup; check write permissions on `./data/` directory |
 | "API key rejected" | Verify key hasn't expired, contact IT Ops |
 | "Certificate validation failed" | Run `dotnet dev-certs https --trust` for local HTTPS |
 | Pre-commit hook not running | Run `.\setup-hooks.ps1` or `git config core.hooksPath .githooks` |
@@ -384,9 +510,10 @@ dotnet user-secrets list
 
 Once local setup is complete:
 1. Read [README.md](../README.md) for project overview
-2. Review [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) for validation rules & traceability
-3. Start implementing Week 2 development tasks
-4. Run unit tests: `dotnet test`
+2. Review [ai/memory/01-system-architecture.md](../ai/memory/01-system-architecture.md) for current architecture
+3. Review [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) for validation rules & traceability
+4. Run unit/integration/E2E tests (276 total): `dotnet test --filter "Category!=Smoke"`
+5. To run the full pipeline smoke test (real DB2 + LHDN pre-prod): see [SETUP_USER_SECRETS.md](SETUP_USER_SECRETS.md)
 
 ---
 

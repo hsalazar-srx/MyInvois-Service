@@ -89,7 +89,7 @@ public class BatchProcessingE2ETests : IDisposable
             {
                 ["100"] = new()
                 {
-                    TIN = "000000000000",
+                    TIN = "C20921865070",
                     Name = "SRX Engineering Sdn Bhd",
                     BRN = "202301012345",
                     IdScheme = "BRN",
@@ -113,9 +113,15 @@ public class BatchProcessingE2ETests : IDisposable
             companySettings,
             new Mock<ILogger<MyInvoisMapper>>().Object);
 
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactoryMock.Object,
+            apiSettings,
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         var submitter = new MyInvoiceSubmitter(
             httpClientFactoryMock.Object,
             apiSettings,
+            tokenService,
             new Mock<ILogger<MyInvoiceSubmitter>>().Object);
 
         // AuditLogger uses in-memory SQLite via factory (ADR-014)
@@ -268,6 +274,43 @@ public class BatchProcessingE2ETests : IDisposable
             ItExpr.IsAny<CancellationToken>());
     }
 
+    [Fact]
+    public async Task E2E_MixedArApBatch_BothTypesSubmittedSuccessfully()
+    {
+        // Validates the full pipeline handles AR (type 01) and AP (type 11) in the same batch.
+        // AR: our company = Supplier. AP: our company = Buyer (self-billing).
+        var records = new List<RawInvoiceRecord>
+        {
+            CreateValidARRecord("E2E-AR-001"),
+            CreateValidAPRecord("E2E-AP-001"),
+            CreateValidARRecord("E2E-AR-002"),
+            CreateValidAPRecord("E2E-AP-002"),
+        };
+
+        _dataSourceMock
+            .Setup(ds => ds.GetInvoicesByDateRangeAsync(
+                It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(records);
+
+        // Act
+        var result = await _processor.ProcessDateRangeBatch(
+            DateTime.Today.AddDays(-1), DateTime.Today, CancellationToken.None);
+
+        // Assert — all 4 processed, none failed
+        result.TotalInvoices.Should().Be(4);
+        result.SuccessCount.Should().Be(4, "both AR and AP invoices should submit successfully");
+        result.FailedCount.Should().Be(0);
+        result.SkippedCount.Should().Be(0);
+
+        // Confirm 4 submission HTTP calls were made (1 per invoice)
+        _httpHandlerMock.Protected().Verify(
+            "SendAsync",
+            Times.Exactly(4),
+            ItExpr.Is<HttpRequestMessage>(req =>
+                req.RequestUri!.ToString().Contains("documentsubmissions")),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
     #region Setup Helpers
 
     private RawInvoiceRecord CreateValidARRecord(string invoiceNumber)
@@ -305,6 +348,41 @@ public class BatchProcessingE2ETests : IDisposable
         };
     }
 
+    private RawInvoiceRecord CreateValidAPRecord(string invoiceNumber)
+    {
+        return new RawInvoiceRecord
+        {
+            InvoiceNo = invoiceNumber,
+            AccountingDate = int.Parse(DateTime.UtcNow.ToString("yyyyMMdd")),
+            InvoiceDate = int.Parse(DateTime.UtcNow.ToString("yyyyMMdd")),
+            InvoiceType = "AP",
+            CompanyCode = "100",
+            PartyId = "SUP-001",   // supplier ID — resolved via GetSupplierDetailsAsync
+            Currency = "MYR",
+            FxRate = 1.0m,
+            InvoiceAmount = 500.00m,
+            GstAmount = 0.00m,     // AP invoices are zero-rated for Malaysian SST
+            VoucherNumber = $"V-{invoiceNumber}",
+            Lines = new List<RawInvoiceLineRecord>
+            {
+                new()
+                {
+                    LineNumber = 1,
+                    ItemNumber = "MAT-001",
+                    Description = "Raw Material Purchase",
+                    ClassificationCode = "022",
+                    Quantity = 5,
+                    UnitOfMeasure = "EA",
+                    UnitPrice = 100.00m,
+                    LineTotal = 500.00m,
+                    TaxCode = "00",
+                    TaxRate = 0.0m,
+                    TaxAmount = 0.00m
+                }
+            }
+        };
+    }
+
     private RawInvoiceRecord CreateInvalidRecord(string invoiceNumber)
     {
         return new RawInvoiceRecord
@@ -329,7 +407,7 @@ public class BatchProcessingE2ETests : IDisposable
             .ReturnsAsync(new PartyDetails
             {
                 PartyId = "CUS-001",
-                TIN = "999999999999",
+                TIN = "C99999999999",
                 Name = "Test Customer Sdn Bhd",
                 BRN = "BRN-CUS-001",
                 Address = "456 Jalan Test, KL",
@@ -342,7 +420,7 @@ public class BatchProcessingE2ETests : IDisposable
             .ReturnsAsync(new PartyDetails
             {
                 PartyId = "SUP-001",
-                TIN = "888888888888",
+                TIN = "C88888888888",
                 Name = "Test Supplier Sdn Bhd",
                 BRN = "BRN-SUP-001",
                 Address = "789 Jalan Supplier, KL",
@@ -373,20 +451,21 @@ public class BatchProcessingE2ETests : IDisposable
 
     private void SetupSuccessfulSubmission()
     {
+        // Return correct LHDN envelope: { acceptedDocuments: [{ uuid }], rejectedDocuments: [] }
         _httpHandlerMock.Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
                 ItExpr.Is<HttpRequestMessage>(req =>
                     req.RequestUri!.ToString().Contains("documentsubmissions")),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
+            .ReturnsAsync(() => new HttpResponseMessage
             {
                 StatusCode = HttpStatusCode.OK,
                 Content = new StringContent(JsonSerializer.Serialize(new
                 {
-                    uuid = $"DOC-{Guid.NewGuid():N}",
-                    submissionDate = DateTime.UtcNow.ToString("o"),
-                    status = "Valid"
+                    submissionUid = $"SUB-{Guid.NewGuid():N}",
+                    acceptedDocuments = new[] { new { uuid = $"DOC-{Guid.NewGuid():N}", invoiceCodeNumber = "test" } },
+                    rejectedDocuments = Array.Empty<object>()
                 }))
             });
     }

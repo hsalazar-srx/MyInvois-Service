@@ -115,6 +115,49 @@ public class AuditLoggerIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task DuplicateDetection_FullLifecycle_SuccessBlocksResubmission_FailureAllowsRetry()
+    {
+        // Full end-to-end duplicate detection lifecycle against real SQLite (no mocks on audit layer).
+        // Verifies the three rules from InvoiceProcessor:
+        //   1. New invoice → not a duplicate → safe to submit
+        //   2. After successful submission → detected as duplicate → must be blocked
+        //   3. After failed submission → NOT a duplicate → retry is allowed
+
+        const string successInvoice = "INV-LIFECYCLE-OK";
+        const string failedInvoice = "INV-LIFECYCLE-FAIL";
+
+        // 1. Before any submission — neither is a duplicate
+        (await _auditLogger.IsInvoiceAlreadySubmitted(successInvoice)).Should().BeFalse(
+            "new invoice must not be detected as duplicate before first submission");
+        (await _auditLogger.IsInvoiceAlreadySubmitted(failedInvoice)).Should().BeFalse(
+            "new invoice must not be detected as duplicate before first submission");
+
+        // 2. Log a successful submission
+        await _auditLogger.LogSubmission(
+            TestDataFactory.CreateSuccessResult(successInvoice),
+            TestDataFactory.CreateValidDocument(successInvoice));
+
+        // 3. Log a failed submission (e.g. DS322 rejection)
+        await _auditLogger.LogSubmission(
+            TestDataFactory.CreateFailedResult(failedInvoice, "DS322", "Document digest mismatch"));
+
+        // 4. After success — must be detected as duplicate (blocks resubmission)
+        (await _auditLogger.IsInvoiceAlreadySubmitted(successInvoice)).Should().BeTrue(
+            "successfully submitted invoice must be blocked from resubmission");
+
+        // 5. After failure — must NOT be detected as duplicate (retry is allowed)
+        (await _auditLogger.IsInvoiceAlreadySubmitted(failedInvoice)).Should().BeFalse(
+            "failed invoice must be retryable — only Success status blocks resubmission");
+
+        // 6. Verify audit log has exactly 2 rows with correct statuses
+        using var ctx = NewCtx();
+        var entries = await ctx.AuditLogs.ToListAsync();
+        entries.Should().HaveCount(2);
+        entries.Should().ContainSingle(e => e.InvoiceNumber == successInvoice && e.Status == "Success");
+        entries.Should().ContainSingle(e => e.InvoiceNumber == failedInvoice && e.Status == "Failed");
+    }
+
+    [Fact]
     public async Task LogSubmission_MultipleFailed_GetFailedSubmissions_ReturnsAllInDescendingOrder()
     {
         // Arrange — 3 failed submissions

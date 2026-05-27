@@ -1,23 +1,16 @@
 namespace MyInvois.Service.DataAccess;
 
 /// <summary>
-/// Flat DTO mapping DB2 result set columns from MOVEX invoice line table (OINVOL).
-/// Joined with MITMAS for item classification code.
+/// Flat DTO mapping DB2 result set columns for invoice line items.
 ///
 /// Uses skill: integration/movex-db2-data-source v1.0+
 ///
-/// DB2 Source Tables:
-///   OINVOL - Invoice line items (qty, price, tax)
-///   MITMAS - Item master (classification code)
+/// DB2 Source Tables (varies by invoice type):
+///   AR (Sales):  OINVOL (invoice lines) + MITMAS (item classification)
+///   AP (Purchase): FGINLI (invoice lines) + MPLINE (PO line for item details)
 ///
-/// SQL Pattern:
-///   SELECT ol.OILVNO, ol.OILITNO, ol.OILITDS, COALESCE(TRIM(im.ITCL),'000'),
-///          ol.OILQA, COALESCE(TRIM(ol.OILUN),'EA'), ol.OILSA,
-///          ol.OILQA * ol.OILSA, COALESCE(TRIM(ol.OILVTCD),''), ol.OILTAXR, ol.OILTAX
-///   FROM {schema}.OINVOL ol
-///   LEFT JOIN {schema}.MITMAS im ON ol.OILITNO = im.ITNO
-///   WHERE ol.OIIVNO = @invoiceNumber
-///   ORDER BY ol.OILVNO
+/// LHDN classification codes (e.g., "022") are assigned in the mapper layer,
+/// not sourced from M3 item master (MITMAS.ITCL).
 /// </summary>
 public class RawInvoiceLineRecord
 {

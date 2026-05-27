@@ -2,7 +2,7 @@
 
 **Version:** 0.1-DESIGN  
 **Status:** Phase 1 — Implementation In Progress (DB2 Direct Access per ADR-013)
-**Target Go-Live:** MVAI (February 28, 2026)  
+**Target Go-Live:** MVAI (April 30, 2026 — second extension; Finance team capacity unavailable for data validation and UAT)
 **Architecture:** Hybrid (Standalone Service + MOVEX-Portal Integration)
 **Data Source:** MOVEX Database (IBM DB2/AS400) — Direct Access (ADR-013)
 
@@ -18,7 +18,7 @@
 - Monthly batch submission (sales: ~100/month, purchase: ~500-1000/month)
 - Transform MOVEX invoices to MyInvois UBL 2.1 schema
 - Mandatory field validation (20+ fields per constraints)
-- Error handling and logging to SQL Server
+- Error handling and audit logging to SQLite (EF Core, ADR-014)
 - Manual retry mechanism (via audit log queries)
 
 ❌ **Out of Scope (Phase 2):**
@@ -35,7 +35,7 @@
 **IMPORTANT:** This project MUST comply with **[WORKSPACE_RULES.md](../.github/WORKSPACE_RULES.md)**.
 
 **Key Requirements:**
-- ✅ Audit logs stored in **SQL Server** (SRX_AuditLog database)
+- ✅ Audit logs stored in **SQLite** (`audit.db` via EF Core 8, ADR-014 — replaces SQL Server)
 - ✅ Connection strings in **User Secrets** (development) or **Azure Key Vault** (production)
 - ✅ **TLS 1.2+** for all external API connections (MyInvois API)
 - ✅ **7-year retention** for audit logs (ISO 27001 compliance)
@@ -94,7 +94,7 @@ MyInvois-Service/
 │   ├── MovexInvoiceReader.cs          ← Fetch from MOVEX DB2/AS400 database
 │   ├── MyInvoiceMapper.cs             ← Transform + validate
 │   ├── MyInvoiceSubmitter.cs          ← Submit to MyInvois API
-│   └── AuditLogger.cs                 ← Log to SQL Server
+│   └── AuditLogger.cs                 ← Log to SQLite (EF Core, ADR-014)
 │
 ├── Validators/                        ← Field-level validation
 │   ├── MandatoryFieldsValidator.cs
@@ -123,9 +123,9 @@ MyInvois-Service/
 ├── Controllers/                       ← HTTP API (for manual triggers)
 │   └── InvoiceController.cs
 │
-├── database/                          ← SQL Server schemas
-│   ├── create-audit-table.sql
-│   └── create-audit-views.sql
+├── Database/                          ← DB2 reference SQL scripts (MOVEX queries)
+│   ├── AP_AR_Invoices_CMP100_CMP300.sql
+│   └── DB2_PartyData_Reference.sql
 │
 ├── tests/                             ← Unit & integration tests
 │   ├── MyInvois.Service.Tests/
@@ -157,8 +157,7 @@ MyInvois-Service/
 ### Prerequisites
 
 - **.NET 8.0 SDK** (or later)
-- **SQL Server 2019+** with database `SRX_AuditLog` created
-- **IBM DB2 driver** (`Net.IBM.Data.Db2` NuGet package) for MOVEX AS400 access
+- **IBM DB2 iSeries Access ODBC driver** for MOVEX AS400 access (`System.Data.Odbc` — no separate NuGet needed)
 - **MOVEX DB2/AS400** connection credentials (server, database, schemas: `mvxcdta`/`mvxc300`)
 - **MyInvois Sandbox credentials** (ClientId, ClientSecret, TIN)
 - **Windows domain account** for local development
@@ -196,17 +195,13 @@ dotnet user-secrets set "MovexDb:ConnectionString" "Server=YOUR_AS400;Database=Y
 dotnet user-secrets set "MyInvoisApi:ClientId" "your-client-id"
 dotnet user-secrets set "MyInvoisApi:ClientSecret" "your-client-secret"
 
-# Set SQL Server connection string
-dotnet user-secrets set "ConnectionStrings:AuditLog" "Server=YOUR_SERVER;Database=SRX_AuditLog;Integrated Security=true;TrustServerCertificate=true;"
+# SQLite audit log path is pre-configured in appsettings.Development.json (./data/audit.db)
+# No secret needed for local development — the database is auto-created on first run
 ```
 
-#### 3. Create Audit Log Database
+#### 3. Run — Audit Database Created Automatically
 
-```powershell
-# Run SQL schema
-sqlcmd -S YOUR_SERVER -i .\src\Database\create-audit-table.sql -d SRX_AuditLog
-sqlcmd -S YOUR_SERVER -i .\src\Database\create-audit-views.sql -d SRX_AuditLog
-```
+The SQLite `audit.db` is created by EF Core on first startup. No manual schema step needed.
 
 #### 4. Run Locally
 
@@ -288,7 +283,7 @@ directly to the `appsettings.json` template already in the repo.
 - Query invoices directly from IBM DB2/AS400 tables (`fpledg`, `fsledg`, `fgledg`)
 - DataAccess layer with strategy pattern (`DirectQueryDataSource` / `StoredProcedureDataSource`)
 - Pluggable `IPartyDataProvider` interface for data retrieval
-- Uses `Net.IBM.Data.Db2` + Dapper for efficient database access
+- Uses `System.Data.Odbc` + Dapper for efficient database access (ADR-013 Gap #3)
 - Schemas: `mvxcdta` (data), `mvxc300` (programs)
 
 ### 2. MyInvois Transformation
@@ -311,8 +306,8 @@ directly to the `appsettings.json` template already in the repo.
 - Manual retry via audit log queries
 
 ### 5. Audit Logging
-- SQL Server [dbo].[AuditLog] table (standard schema)
-- MyInvois-specific fields (UUID, status, error codes)
+- SQLite `audit.db` via EF Core 8 — 30-column schema, WAL mode, auto-created on startup (ADR-014)
+- MyInvois-specific fields (UUID, submission ID, invoice financials)
 - Request/response payloads for forensics
 - Correlation IDs for distributed tracing
 
@@ -339,7 +334,7 @@ directly to the `appsettings.json` template already in the repo.
 
 ### Encryption
 - **In Transit**: TLS 1.2+ for all API calls
-- **At Rest**: SQL Server TDE (Transparent Data Encryption)
+- **At Rest**: BitLocker on IIS server volume + NTFS ACL on `audit.db` (ADR-014)
 - **Secrets**: User Secrets (dev), Encrypted Server Storage (production)
 - **Digital Certificate**: Stored in encrypted directory with Windows EFS + NTFS permissions
 - **Certificate Private Key**: Never exported, protected by Windows credential storage (Credential Manager or DPAPI)
@@ -373,31 +368,23 @@ directly to the `appsettings.json` template already in the repo.
 
 ## 📝 Development Timeline (MVAI)
 
-### Week 1 (Feb 3-7): Foundation ✓
-- ✅ Project scaffolding
-- ✅ Configuration files
-- ✅ SQL Server schema
-- ✅ Models & DTOs
-- ⏳ Next: Week 2
+### Phase 0 (Feb 3-7): Foundation ✅
+- ✅ Project scaffolding, configuration, models, documentation
 
-### Week 2 (Feb 10-14): Core Implementation
-- [ ] Implement `MovexInvoiceReader`
-- [ ] Implement `MyInvoiceMapper` + all validators
-- [ ] Implement `MyInvoiceSubmitter` (OAuth, submission)
-- [ ] Implement `AuditLogger`
-- [ ] Unit tests (≥80% coverage)
+### Phase 1 (Feb 10 — Feb 28): Core Implementation ✅
+- ✅ `MovexInvoiceReader`, `MyInvoiceMapper`, all validators
+- ✅ `MyInvoiceSubmitter` (OAuth, XAdES, retry, rate limiting)
+- ✅ `DirectQueryDataSource` (Dapper+ODBC, ADR-013)
+- ✅ 184+ unit tests, 5 integration tests, 5 E2E tests
 
-### Week 3 (Feb 17-21): Integration Testing
-- [ ] Integration tests (sandbox)
-- [ ] Batch processing test (100+ invoices)
-- [ ] Create runbook
-- [ ] Performance tuning
+### Sprint 6 (Mar 9): SQLite Migration ✅
+- ✅ `AuditLogger` migrated from SQL Server to SQLite via EF Core 8 (ADR-014)
+- ✅ 233 tests passing (100%)
 
-### Week 4 (Feb 24-28): UAT & Go-Live
-- [ ] UAT with Finance team
-- [ ] MVAI dry-run
-- [ ] **MVAI go-live** (Feb 28)
-- [ ] Monitor + support
+### Sprint 7 / UAT (Mar 17-30): Go-Live Readiness 🔄
+- 🔄 AP invoice SQL fix (Sprint 7 blocker)
+- 🔄 Compliance validation, backup runbook, smoke tests
+- 🔄 **MVAI go-live Apr 30** (extended per ADR-016 Amendment 2026-03-30)
 
 ---
 
@@ -429,11 +416,11 @@ directly to the `appsettings.json` template already in the repo.
 
 ### On-Call Rotation
 - **Weekday (9-17)**: Dev Team
-- **After-hours**: IT Ops (SQL Server issues) + Dev On-Call
+- **After-hours**: IT Ops (server/infrastructure issues) + Dev On-Call
 
 ### Escalation Path
 1. Check logs (Application Insights or file logs)
-2. Query [dbo].vw_MyInvois_FailedSubmissions
+2. Query SQLite audit log: `sqlite3 data/audit.db "SELECT InvoiceNumber,Status,ErrorMessage FROM AuditLogs WHERE Status='Failed' ORDER BY Timestamp DESC LIMIT 20;"`
 3. Check MyInvois API status (myinvois.hasil.gov.my)
 4. Escalate to IT Manager (if > 50% failure rate)
 
@@ -461,9 +448,10 @@ See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for:
 Before MVAI go-live, verify:
 
 ### Database & Configuration
-- [ ] **Database**: SRX_AuditLog created, TDE enabled
-- [ ] **Schema**: [dbo].[AuditLog] created with all indexes
-- [ ] **Secrets**: All User Secrets configured (API keys, connection strings, certificate)
+- [ ] **Audit DB**: `./data/` directory exists with write permissions for service account; `audit.db` created on first startup
+- [ ] **WAL mode**: Confirmed after first run (`PRAGMA journal_mode;` returns `wal`)
+- [ ] **SQLite backup**: Daily backup script scheduled per DEPLOYMENT.md (7-year retention, ADR-014)
+- [ ] **Secrets**: All User Secrets configured (MovexDb connection string, API keys, certificate)
 - [ ] **Certificate**: Digital certificate purchased from recognized Malaysian CA
 - [ ] **Certificate Storage**: Encrypted directory created (`C:\Certs\MyInvois`), EFS enabled
 - [ ] **Certificate Password**: Stored securely in Windows Credential Manager or DPAPI
@@ -485,7 +473,7 @@ Before MVAI go-live, verify:
 - [ ] **Documentation**: README, SETUP, DEPLOYMENT, TROUBLESHOOTING runbooks complete
 - [ ] **Monitoring**: Certificate expiry monitoring script deployed
 - [ ] **Backup Procedure**: Encrypted backup created and verified
-- [ ] **Audit Trail**: Sample submissions logged to SQL Server
+- [ ] **Audit Trail**: Sample submissions logged to SQLite `audit.db`, WAL mode active
 - [ ] **On-Call Team**: Briefed on certificate renewal procedures and escalation
 - [ ] **Finance**: Approved budget, registered certificate with MyInvois
 
@@ -507,7 +495,7 @@ Internal project for SRX Global. See [LICENSE](LICENSE) for details.
 
 ---
 
-**Last Updated:** February 27, 2026
+**Last Updated:** March 18, 2026
 **Maintained By:** Development Team  
 **Status:** ✅ Active Development  
 

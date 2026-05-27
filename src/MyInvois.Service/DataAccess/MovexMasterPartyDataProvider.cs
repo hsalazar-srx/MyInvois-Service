@@ -54,10 +54,10 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
                 await using var connection = new OdbcConnection(_settings.ConnectionString);
                 await connection.OpenAsync(cancellationToken);
 
+                // DB2 for i uses positional ? parameters — use DynamicParameters with p0, p1 keys
                 var sql = BuildSupplierSql(schema);
                 var parameters = new DynamicParameters();
-                parameters.Add("supplierId", supplierId);
-
+                parameters.Add("p0", supplierId);
                 var result = await connection.QueryFirstOrDefaultAsync<SupplierDto>(
                     new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken));
 
@@ -105,7 +105,7 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
 
                 var sql = BuildCustomerSql(schema);
                 var parameters = new DynamicParameters();
-                parameters.Add("customerId", customerId);
+                parameters.Add("p0", customerId);
 
                 var result = await connection.QueryFirstOrDefaultAsync<CustomerDto>(
                     new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken));
@@ -142,27 +142,29 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
 
     private string BuildSupplierSql(string schema)
     {
-        // Standard CIDMAS columns: IDSUNO (ID), IDSUNM (name), IDADR1-3 (address), IDPONO (postal), IDCSCD (country)
-        // TIN/BRN columns are configurable — pending Finance team confirmation
+        // CIDMAS available columns (confirmed against MVXCDTA schema):
+        // IDSUNM (name), IDCSCD (country), IDVRNO (VAT/BRN), IDCORG/IDCOR2 (org numbers)
+        // NOTE: IDADR1-3 and IDPONO do NOT exist in this M3 installation.
+        // Address fields are not available in CIDMAS — supplier address sourced elsewhere if needed.
         var tinSelect = string.IsNullOrWhiteSpace(_settings.SupplierTinColumn)
             ? "CAST(NULL AS VARCHAR(20)) AS TIN"
             : $"TRIM(s.{_settings.SupplierTinColumn}) AS TIN";
 
         var brnSelect = string.IsNullOrWhiteSpace(_settings.SupplierBrnColumn)
-            ? "CAST(NULL AS VARCHAR(20)) AS BRN"
+            ? "TRIM(s.IDVRNO) AS BRN"  // Default: use VAT registration number as BRN
             : $"TRIM(s.{_settings.SupplierBrnColumn}) AS BRN";
 
         return $@"SELECT
             TRIM(s.IDSUNM) AS Name,
             {tinSelect},
             {brnSelect},
-            TRIM(s.IDADR1) AS Address1,
-            TRIM(s.IDADR2) AS Address2,
-            TRIM(s.IDADR3) AS Address3,
-            TRIM(s.IDPONO) AS PostalCode,
+            CAST(NULL AS VARCHAR(100)) AS Address1,
+            CAST(NULL AS VARCHAR(100)) AS Address2,
+            CAST(NULL AS VARCHAR(100)) AS Address3,
+            CAST(NULL AS VARCHAR(20)) AS PostalCode,
             TRIM(s.IDCSCD) AS CountryCode
         FROM {schema}.CIDMAS s
-        WHERE TRIM(s.IDSUNO) = @supplierId";
+        WHERE TRIM(s.IDSUNO) = ?";
     }
 
     private string BuildCustomerSql(string schema)
@@ -184,10 +186,10 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
             TRIM(c.OKCUA1) AS Address1,
             TRIM(c.OKCUA2) AS Address2,
             TRIM(c.OKCUA3) AS Address3,
-            TRIM(c.OPPONO) AS PostalCode,
+            TRIM(c.OKPONO) AS PostalCode,
             TRIM(c.OKCSCD) AS CountryCode
         FROM {schema}.OCUSMA c
-        WHERE TRIM(c.OKCUNO) = @customerId";
+        WHERE TRIM(c.OKCUNO) = ?";
     }
 
     #endregion

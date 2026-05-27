@@ -117,6 +117,15 @@ public class MyInvoisMapperTests
     }
 
     [Fact]
+    public void Transform_SalesInvoice_SetsDocumentTypeCode01()
+    {
+        // AR invoices must use LHDN type "01" (Invoice) — submitting party is the supplier.
+        var result = _sut.Transform(CreateValidMovexSalesInvoice());
+
+        result.DocumentTypeCode.Should().Be("01");
+    }
+
+    [Fact]
     public void Transform_SalesInvoice_MapsBuyerAsCustomer()
     {
         // Arrange
@@ -172,6 +181,39 @@ public class MyInvoisMapperTests
 
         // Assert
         result.BuyerName.Should().NotBeNullOrWhiteSpace("buyer name is mandatory for purchase");
+    }
+
+    [Fact]
+    public void Transform_PurchaseInvoice_SetsDocumentTypeCode11()
+    {
+        // AP invoices must use LHDN type "11" (Self-Billed Invoice) — submitting party is the buyer.
+        var result = _sut.Transform(CreateValidMovexPurchaseInvoice());
+
+        result.DocumentTypeCode.Should().Be("11");
+    }
+
+    [Fact]
+    public void Transform_PurchaseInvoice_SupplierAndBuyerRolesAreSwappedVsAR()
+    {
+        // For AR: our company = Supplier, customer = Buyer.
+        // For AP: external vendor = Supplier, our company = Buyer.
+        // This asserts the swap is correct so both types submit with the right party in each role.
+        var purchase = CreateValidMovexPurchaseInvoice();
+        purchase.Supplier = new InvoiceParty { TIN = "C77777777777", Name = "External Vendor Sdn Bhd", BRN = "BRN-EXT", IdScheme = "BRN" };
+
+        var apResult  = _sut.Transform(purchase);
+
+        var sales = CreateValidMovexSalesInvoice();
+        sales.Buyer = new InvoiceParty { TIN = "C77777777777", Name = "External Vendor Sdn Bhd", BRN = "BRN-EXT", IdScheme = "BRN" };
+
+        var arResult  = _sut.Transform(sales);
+
+        // Same external party appears as Supplier in AP but as Buyer in AR
+        apResult.SupplierTIN.Should().Be("C77777777777", "AP: external party is the supplier");
+        apResult.BuyerTIN.Should().NotBe("C77777777777", "AP: our company is the buyer");
+
+        arResult.BuyerTIN.Should().Be("C77777777777", "AR: external party is the buyer");
+        arResult.SupplierTIN.Should().NotBe("C77777777777", "AR: our company is the supplier");
     }
 
     #endregion

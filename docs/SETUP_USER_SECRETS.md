@@ -1,160 +1,146 @@
 # User Secrets Setup Guide
 
-This guide helps you configure User Secrets for the MyInvois-Service smoke test.
+**Last Updated:** 2026-05-25
+**Audience:** Developers
 
-## Prerequisites
+There are **two separate secrets scopes** in this solution. Set the right one depending
+on what you are doing.
 
-- DB2/ODBC connection to MOVEX AS/400 (CMP300 dev environment)
-- MyInvois sandbox API credentials (ClientId + ClientSecret)
+---
 
-## Setup Commands
+## Scope 1 — `src/MyInvois.Api` (day-to-day development)
 
-Run these commands from the `src/MyInvois.Service` directory:
+Used when running the API host locally (`dotnet run` from `src/MyInvois.Api`).
 
-```bash
-cd c:\Projects\MyInvois-Service\src\MyInvois.Service
+```powershell
+cd c:\Projects\MyInvois-Service\src\MyInvois.Api
 
-# 1. DB2 Connection String (MOVEX AS/400)
-dotnet user-secrets set "MovexDb:ConnectionString" "DSN=YOUR_DB2_DSN;UID=YOUR_USER;PWD=YOUR_PASSWORD"
+# MOVEX DB2/ODBC connection
+dotnet user-secrets set "MovexDb:ConnectionString" `
+    "Driver={IBM i Access ODBC Driver};System=<AS400_HOST>;UID=<user>;PWD=<password>"
 
-# Alternative ODBC connection string format:
-# dotnet user-secrets set "MovexDb:ConnectionString" "Driver={IBM i Access ODBC Driver};System=YOUR_AS400_HOST;UID=YOUR_USER;PWD=YOUR_PASSWORD"
+# MyInvois pre-prod OAuth credentials
+dotnet user-secrets set "MyInvoisApi:ClientId"     "a777bc19-e8b9-4adb-b793-7c8b64368a5a"
+dotnet user-secrets set "MyInvoisApi:ClientSecret" "<secret from IT Ops>"
 
-# 2. MyInvois Sandbox API Credentials
-dotnet user-secrets set "MyInvoisApi:ClientId" "YOUR_SANDBOX_CLIENT_ID"
-dotnet user-secrets set "MyInvoisApi:ClientSecret" "YOUR_SANDBOX_CLIENT_SECRET"
+# Certificate password (trial cert, valid 2026-03-09 → 2026-09-05)
+dotnet user-secrets set "MyInvoisApi:CertificatePassword" "<certificate password>"
+
+# API keys for BatchController and SM-Portal integration
+dotnet user-secrets set "ApiKeys:Primary" "$(New-Guid)"
+dotnet user-secrets set "ApiKeys:Admin"   "$(New-Guid)"
 ```
 
-## Verify Secrets
+The audit log SQLite path is already set in `appsettings.Development.json`
+(`Data Source=./data/audit.db`) — no secret needed for local dev.
 
-Check that secrets are set correctly:
-
-```bash
+**Verify:**
+```powershell
 dotnet user-secrets list
+# Expected keys: MovexDb:ConnectionString, MyInvoisApi:ClientId,
+#                MyInvoisApi:ClientSecret, MyInvoisApi:CertificatePassword,
+#                ApiKeys:Primary, ApiKeys:Admin
 ```
 
-Expected output:
-```
-MovexDb:ConnectionString = DSN=...
-MyInvoisApi:ClientId = ...
-MyInvoisApi:ClientSecret = ...
-```
+---
 
-## Test Connection
+## Scope 2 — `tests/MyInvois.Service.Tests` (smoke test only)
 
-Run the smoke test to verify connectivity:
+The smoke test (`Category=Smoke`) is the only test that requires real infrastructure.
+All 276 unit/integration/E2E tests run without any secrets — never run the smoke test
+as part of your normal `dotnet test` run.
 
-```bash
+Secrets ID: **`myinvois-service-smoketest`**
+
+```powershell
 cd c:\Projects\MyInvois-Service
 
-# Remove the Skip attribute from FullPipelineSmokeTest.cs first (line 38)
-# Change: [Fact(Skip = "Manual execution only...")]
-# To:     [Fact]
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MovexDb:ConnectionString" `
+    "Driver={IBM i Access ODBC Driver};System=<AS400_HOST>;UID=<user>;PWD=<password>"
 
-dotnet test tests/MyInvois.Service.Tests --filter "Category=Smoke" --logger "console;verbosity=detailed"
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MyInvoisApi:ClientId" "a777bc19-e8b9-4adb-b793-7c8b64368a5a"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MyInvoisApi:ClientSecret" "<secret>"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MyInvoisApi:CertificatePassword" "<certificate password>"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "ConnectionStrings:AuditLog" "Data Source=E:\data\audit.db"
 ```
 
-## Configuration: Enable MovexMasterPartyDataProvider
-
-Update `appsettings.json` to use real party data provider:
-
-```json
-{
-  "MovexDb": {
-    "PartyDataSource": "MovexMaster",  // Change from "Placeholder"
-    "SupplierTinColumn": "",  // Leave empty until Finance provides column name
-    "CustomerTinColumn": "",  // Leave empty until Finance provides column name
-    "SupplierBrnColumn": "",
-    "CustomerBrnColumn": ""
-  }
-}
+**Run smoke test:**
+```powershell
+dotnet test tests/MyInvois.Service.Tests `
+    --filter "Category=Smoke" `
+    --logger "console;verbosity=detailed"
 ```
 
-## Expected Smoke Test Results
-
-### Stage 1: Before Finance provides TIN/BRN columns
-
-```
-=== BATCH PROCESSING RESULTS ===
-Total Invoices Found: X
-Success Count: 0
-Failed Count: X
-Skipped Count: 0
-
-=== VALIDATION GAP ANALYSIS ===
-Validation Failures: X/X
-
-Common validation errors:
-  - TIN is required: X occurrences
-  - BRN is required: X occurrences
-
-💡 Next Steps:
-   1. Configure TIN/BRN columns in MovexDbSettings (waiting on Finance team)
+**Run all non-smoke tests (normal CI):**
+```powershell
+dotnet test --filter "Category!=Smoke"
+# Expected: Passed! Failed: 0, Passed: 276
 ```
 
-**Interpretation:** Pipeline works! DB2 connection successful, invoices fetched, party data (name/address) retrieved. Validation correctly identifies missing TIN/BRN — this gap closes when Finance provides column names.
+---
 
-### Stage 2: After Finance provides TIN/BRN columns
+## Common Errors
 
-Update `appsettings.json`:
-```json
-{
-  "MovexDb": {
-    "SupplierTinColumn": "IDCFC1",  // Example — confirm with Finance
-    "CustomerTinColumn": "OKCFC1"   // Example — confirm with Finance
-  }
-}
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `Format of the initialization string does not conform to specification starting at index 0` | `MovexDb:ConnectionString` secret not set; placeholder `{{FROM_USER_SECRETS}}` used literally | Set the secret for the correct scope (Scope 1 or Scope 2) |
+| `Invalid client` (OAuth 401) | Wrong `ClientId` or `ClientSecret` | Verify against IT Ops — pre-prod ClientId is `a777bc19-...` |
+| `MyInvoisApi:ClientId not configured` | Smoke test secrets not set | Set Scope 2 secrets above |
+| `File not found` for certificate | Wrong path in `appsettings.json` or cert not copied | Verify `C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12` exists |
+| `The supplied password is incorrect` | Wrong certificate password | Get correct password from IT Ops secure store |
+
+---
+
+## LHDN Pre-Prod Endpoint Notes
+
+The **same host** serves both OAuth tokens and API submissions:
+```
+https://preprod-api.myinvois.hasil.gov.my/connect/token      ← token
+https://preprod-api.myinvois.hasil.gov.my/api/v1.0/documentsubmissions  ← submit
 ```
 
-Re-run smoke test:
+Do **not** use:
+- `sandbox.myinvois.*` — browser-only App Proxy, not M2M
+- `identity.myinvois.*` — does not exist for machine-to-machine auth
+
+---
+
+## Party Data Source
+
+`MovexDb:PartyDataSource` controls how supplier/customer TIN and BRN are resolved:
+
+| Value | Behaviour |
+|-------|-----------|
+| `Placeholder` | Returns stub data; validation will fail (expected in early dev) |
+| `MovexMaster` | Queries CIDMAS (suppliers) and OCUSMA (customers) in DB2 |
+
+Switch when TIN/BRN column names are confirmed by Finance:
+```powershell
+dotnet user-secrets set "MovexDb:PartyDataSource"    "MovexMaster"
+dotnet user-secrets set "MovexDb:SupplierTinColumn"  "IDCFC1"
+dotnet user-secrets set "MovexDb:SupplierBrnColumn"  "IDCORG"
+dotnet user-secrets set "MovexDb:CustomerTinColumn"  "OKCFC1"
+dotnet user-secrets set "MovexDb:CustomerBrnColumn"  "OKCORG"
 ```
-=== BATCH PROCESSING RESULTS ===
-Total Invoices Found: X
-Success Count: 0
-Failed Count: X
 
-=== MyInvois Submission Failures: X
-  - DS301 (Invalid Signature): X occurrences
+---
 
-💡 DS301 (Invalid Signature) detected:
-   - XAdES v1.1 signing is placeholder
+## User Secrets File Locations (Windows)
+
+```
+src/MyInvois.Api secrets:
+  %APPDATA%\Microsoft\UserSecrets\<UserSecretsId from .csproj>\secrets.json
+
+tests/MyInvois.Service.Tests secrets (ID: myinvois-service-smoketest):
+  %APPDATA%\Microsoft\UserSecrets\myinvois-service-smoketest\secrets.json
 ```
 
-**Interpretation:** Validation passes! Submission fails due to unsigned XML — expected until UBL 2.1 + XAdES implementation.
-
-## Troubleshooting
-
-### DB2 Connection Errors
-
-**Error:** `SQLSTATE 08001` or connection timeout
-- **Fix:** Verify AS/400 hostname, credentials, and network connectivity
-- **Test:** `ping YOUR_AS400_HOST` and check firewall rules
-
-**Error:** `[IBM][CLI Driver] SQL1024N  A database connection does not exist.`
-- **Fix:** DB2 ODBC driver not installed
-- **Install:** Download IBM i Access ODBC Driver from IBM
-
-### MyInvois API Errors
-
-**Error:** 401 Unauthorized during OAuth
-- **Fix:** Verify ClientId/ClientSecret are correct for sandbox environment
-- **Check:** Credentials match those registered at https://sandbox.myinvois.hasil.gov.my
-
-**Error:** Token endpoint timeout
-- **Fix:** Check network access to MyInvois sandbox
-- **Test:** `curl https://sandbox.myinvois.hasil.gov.my/connect/token`
-
-## Next Steps After Smoke Test
-
-1. ✅ Verify DB2 connectivity and invoice retrieval
-2. ✅ Confirm party data enrichment (name/address)
-3. ⏳ Get TIN/BRN column names from Finance team
-4. ⏳ Implement UBL 2.1 serialization (manual or SDK-based)
-5. ⏳ Implement XAdES v1.1 signing (requires digital certificate)
-6. 🎯 Full end-to-end submission to MyInvois sandbox
-
-## Support
-
-- **DB2 Connection Issues:** Contact DBA team
-- **MyInvois API Issues:** Check https://sdk.myinvois.hasil.gov.my/
-- **Code Issues:** Review PROJECT_STATUS.md and IMPLEMENTATION_CHECKLIST.md
+Run `dotnet user-secrets list` from the project directory to see current values.

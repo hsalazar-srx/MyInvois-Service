@@ -3,6 +3,40 @@ namespace MyInvois.Api.Models;
 // Uses skill: architecture/dotnet-api-design v1.0
 
 /// <summary>
+/// Request body for POST /api/v1/batch/process-range.
+/// </summary>
+public class ProcessRangeRequest
+{
+    /// <summary>Start date, inclusive (yyyy-MM-dd).</summary>
+    public string FromDate { get; set; } = string.Empty;
+
+    /// <summary>End date, inclusive (yyyy-MM-dd).</summary>
+    public string ToDate { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Summary response for POST /api/v1/batch/process-range.
+/// Full per-invoice detail is omitted to keep the response payload small.
+/// </summary>
+public class BatchProcessResponse
+{
+    public string   BatchId        { get; set; } = string.Empty;
+    public string   BatchType      { get; set; } = string.Empty;
+    public string   FromDate       { get; set; } = string.Empty;
+    public string   ToDate         { get; set; } = string.Empty;
+    public int      TotalInvoices  { get; set; }
+    public int      SuccessCount   { get; set; }
+    public int      FailedCount    { get; set; }
+    public int      SkippedCount   { get; set; }
+    public decimal  SuccessRate    { get; set; }
+    public long     DurationSeconds { get; set; }
+    public string?  ErrorSummary   { get; set; }
+    public DateTime StartedAt      { get; set; }
+    public DateTime? CompletedAt   { get; set; }
+}
+
+
+/// <summary>
 /// Invoice summary for the list endpoint GET /api/v1/invoices.
 /// Mapped from MyInvois.Service.DataAccess.RawInvoiceRecord.
 /// </summary>

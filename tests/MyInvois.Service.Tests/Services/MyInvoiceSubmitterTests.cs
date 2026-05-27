@@ -1,3 +1,4 @@
+namespace MyInvois.Service.Tests.Services;
 
 using System.Net;
 using System.Net.Http.Json;
@@ -41,9 +42,15 @@ public class MyInvoiceSubmitterTests
             TIN = "C12345678901"
         };
 
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object,
+            Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         _sut = new MyInvoiceSubmitter(
             _httpClientFactoryMock.Object,
             Options.Create(_apiSettings),
+            tokenService,
             _loggerMock.Object);
     }
 
@@ -52,208 +59,49 @@ public class MyInvoiceSubmitterTests
     [Fact]
     public void Constructor_WithNullHttpClientFactory_ThrowsArgumentNullException()
     {
-        // Arrange & Act
-        var action = () => new MyInvoiceSubmitter(
-            null!,
-            Options.Create(_apiSettings),
-            _loggerMock.Object);
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
 
-        // Assert
-        action.Should().Throw<ArgumentNullException>()
-            .WithParameterName("httpClientFactory");
+        var action = () => new MyInvoiceSubmitter(
+            null!, Options.Create(_apiSettings), tokenService, _loggerMock.Object);
+
+        action.Should().Throw<ArgumentNullException>().WithParameterName("httpClientFactory");
     }
 
     [Fact]
     public void Constructor_WithNullSettings_ThrowsArgumentNullException()
     {
-        // Arrange & Act
-        var action = () => new MyInvoiceSubmitter(
-            _httpClientFactoryMock.Object,
-            null!,
-            _loggerMock.Object);
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
 
-        // Assert
-        action.Should().Throw<ArgumentNullException>()
-            .WithParameterName("settings");
+        var action = () => new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, null!, tokenService, _loggerMock.Object);
+
+        action.Should().Throw<ArgumentNullException>().WithParameterName("settings");
+    }
+
+    [Fact]
+    public void Constructor_WithNullTokenService_ThrowsArgumentNullException()
+    {
+        var action = () => new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings), null!, _loggerMock.Object);
+
+        action.Should().Throw<ArgumentNullException>().WithParameterName("tokenService");
     }
 
     [Fact]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        // Arrange & Act
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         var action = () => new MyInvoiceSubmitter(
-            _httpClientFactoryMock.Object,
-            Options.Create(_apiSettings),
-            null!);
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings), tokenService, null!);
 
-        // Assert
-        action.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
-    }
-
-    #endregion
-
-    #region GetAccessToken Tests
-
-    [Fact]
-    public async Task GetAccessToken_FirstCall_FetchesNewToken()
-    {
-        // Arrange
-        var tokenResponse = new
-        {
-            access_token = "new-access-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
-        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.Method == HttpMethod.Post &&
-                    req.RequestUri!.ToString().Contains("/connect/token")),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
-
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
-
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
-
-        // Act
-        var result = await _sut.GetAccessToken();
-
-        // Assert
-        result.Should().Be("new-access-token");
-        httpMessageHandlerMock.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task GetAccessToken_CachedValid_ReturnsCachedToken()
-    {
-        // Arrange
-        var tokenResponse = new
-        {
-            access_token = "cached-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
-        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
-
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
-
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
-
-        // Act - First call
-        var firstToken = await _sut.GetAccessToken();
-
-        // Act - Second call (should use cache)
-        var secondToken = await _sut.GetAccessToken();
-
-        // Assert
-        firstToken.Should().Be("cached-token");
-        secondToken.Should().Be("cached-token");
-        secondToken.Should().BeSameAs(firstToken);
-
-        // Verify HTTP call was made only once (cached for second call)
-        httpMessageHandlerMock.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task GetAccessToken_CachedExpired_FetchesNewToken()
-    {
-        // Arrange - First token with very short expiry (already expired)
-        var firstTokenResponse = new
-        {
-            access_token = "expired-token",
-            token_type = "Bearer",
-            expires_in = -1 // Already expired
-        };
-
-        var secondTokenResponse = new
-        {
-            access_token = "refreshed-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
-        var callCount = 0;
-        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(() =>
-            {
-                callCount++;
-                var response = callCount == 1 ? firstTokenResponse : secondTokenResponse;
-                return new HttpResponseMessage
-                {
-                    StatusCode = HttpStatusCode.OK,
-                    Content = JsonContent.Create(response)
-                };
-            });
-
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
-
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
-
-        // Act
-        var firstToken = await _sut.GetAccessToken();
-        var secondToken = await _sut.GetAccessToken(); // Should fetch new token
-
-        // Assert
-        firstToken.Should().Be("expired-token");
-        secondToken.Should().Be("refreshed-token");
-
-        // Verify HTTP calls were made twice (token expired)
-        httpMessageHandlerMock.Protected().Verify(
-            "SendAsync",
-            Times.Exactly(2),
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>());
+        action.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
 
     #endregion
@@ -273,11 +121,15 @@ public class MyInvoiceSubmitterTests
             expires_in = 3600
         };
 
+        // LHDN envelope: accepted document carries the UUID inside acceptedDocuments[]
         var submissionResponse = new
         {
-            uuid = "12345678-1234-1234-1234-123456789012",
-            submissionDate = "2026-02-17T10:00:00Z",
-            status = "Valid"
+            submissionUid = "SUB-2026-00001",
+            acceptedDocuments = new[]
+            {
+                new { uuid = "12345678-1234-1234-1234-123456789012", invoiceCodeNumber = document.InvoiceNumber }
+            },
+            rejectedDocuments = Array.Empty<object>()
         };
 
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
@@ -331,161 +183,121 @@ public class MyInvoiceSubmitterTests
     }
 
     [Fact]
-    public async Task Submit_RateLimit_RetriesWithBackoff()
+    public async Task Submit_RateLimit_RetriesAndSucceedsOnSecondAttempt()
     {
-        // Arrange
+        // Polly retries on HTTP 429. Production delays are 5s/10s/20s — injected as zero here
+        // so the test completes instantly while still exercising the retry path.
         var document = CreateValidMyInvoiceDocument();
 
-        var tokenResponse = new
-        {
-            access_token = "valid-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
-
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
         var submissionResponse = new
         {
-            uuid = "12345678-1234-1234-1234-123456789012",
-            submissionDate = "2026-02-17T10:00:00Z",
-            status = "Valid"
+            submissionUid = "SUB-2026-RETRY",
+            acceptedDocuments = new[]
+            {
+                new { uuid = "12345678-1234-1234-1234-123456789012", invoiceCodeNumber = document.InvoiceNumber }
+            },
+            rejectedDocuments = Array.Empty<object>()
         };
 
         var callCount = 0;
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
 
-        // Mock token endpoint
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/connect/token")),
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
 
-        // Mock submission endpoint - first call returns 429, second succeeds
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/documentsubmissions")),
+        // First submission call → 429; second → 200 with accepted document
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
                 ItExpr.IsAny<CancellationToken>())
             .ReturnsAsync(() =>
             {
                 callCount++;
-                if (callCount == 1)
-                {
-                    return new HttpResponseMessage
-                    {
-                        StatusCode = HttpStatusCode.TooManyRequests, // 429
-                        Content = new StringContent("{\"error\":\"rate_limit_exceeded\"}")
-                    };
-                }
-
-                return new HttpResponseMessage
-                {
-                    StatusCode = HttpStatusCode.OK,
-                    Content = JsonContent.Create(submissionResponse)
-                };
+                return callCount == 1
+                    ? new HttpResponseMessage { StatusCode = HttpStatusCode.TooManyRequests, Content = new StringContent("{\"error\":\"rate_limit_exceeded\"}") }
+                    : new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(submissionResponse) };
             });
 
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
 
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
+        // Build a submitter with zero-delay retry so the test doesn't sleep for 5 seconds
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+        var sut = new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            tokenService, _loggerMock.Object,
+            retrySleepProvider: _ => TimeSpan.Zero);
 
         // Act
-        var result = await _sut.Submit(document);
+        var result = await sut.Submit(document);
 
-        // Assert
-        result.Should().NotBeNull();
+        // Assert — retry succeeded
         result.Status.Should().Be("Success");
         result.MyInvoisUUID.Should().Be("12345678-1234-1234-1234-123456789012");
 
-        // Verify retry happened (2 submission calls total)
+        // 1 initial call + 1 retry = 2 total submission requests
         httpMessageHandlerMock.Protected().Verify(
             "SendAsync",
             Times.Exactly(2),
-            ItExpr.Is<HttpRequestMessage>(req =>
-                req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
             ItExpr.IsAny<CancellationToken>());
     }
 
     [Fact]
     public async Task Submit_ServerError_RetriesUpTo3Times()
     {
-        // Arrange
+        // Polly retries on HTTP 500 up to 3 times. Zero-delay injection keeps the test fast.
         var document = CreateValidMyInvoiceDocument();
-
-        var tokenResponse = new
-        {
-            access_token = "valid-token",
-            token_type = "Bearer",
-            expires_in = 3600
-        };
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
 
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
 
-        // Mock token endpoint
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/connect/token")),
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = HttpStatusCode.OK,
-                Content = JsonContent.Create(tokenResponse)
-            });
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
 
-        // Mock submission endpoint - always returns 500
-        httpMessageHandlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/documentsubmissions")),
+        // Always returns 500 — Polly exhausts all 3 retries then gives up
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
                 ItExpr.IsAny<CancellationToken>())
             .ReturnsAsync(new HttpResponseMessage
             {
-                StatusCode = HttpStatusCode.InternalServerError, // 500
+                StatusCode = HttpStatusCode.InternalServerError,
                 Content = new StringContent("{\"error\":\"internal_server_error\"}")
             });
 
-        var httpClient = new HttpClient(httpMessageHandlerMock.Object)
-        {
-            BaseAddress = new Uri(_apiSettings.BaseUrl)
-        };
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
 
-        _httpClientFactoryMock
-            .Setup(f => f.CreateClient("MyInvois"))
-            .Returns(httpClient);
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+        var sut = new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            tokenService, _loggerMock.Object,
+            retrySleepProvider: _ => TimeSpan.Zero);
 
         // Act
-        var result = await _sut.Submit(document);
+        var result = await sut.Submit(document);
 
         // Assert
-        result.Should().NotBeNull();
         result.Status.Should().Be("Failed");
         result.ErrorCode.Should().NotBeNullOrEmpty();
 
-        // Verify 1 initial + 3 retries = 4 total calls (per resilience-patterns skill)
+        // 1 initial + 3 retries = 4 total submission calls
         httpMessageHandlerMock.Protected().Verify(
             "SendAsync",
             Times.Exactly(4),
-            ItExpr.Is<HttpRequestMessage>(req =>
-                req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
             ItExpr.IsAny<CancellationToken>());
     }
 
@@ -647,11 +459,134 @@ public class MyInvoiceSubmitterTests
             ItExpr.IsAny<CancellationToken>());
     }
 
+    [Fact]
+    public async Task Submit_Http200WithRejectedDocuments_ReturnsFailed()
+    {
+        // LHDN returns HTTP 200 even when individual documents are rejected.
+        // The rejection is signalled via the rejectedDocuments array in the response body.
+        // This is the most common real-world rejection path (e.g. invalid TIN, CF321, DS3xx).
+        var document = CreateValidMyInvoiceDocument();
+
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
+
+        // HTTP 200 body with the submitted invoice in rejectedDocuments
+        var submissionResponse = new
+        {
+            submissionUid = "SUB-TEST-001",
+            acceptedDocuments = Array.Empty<object>(),
+            rejectedDocuments = new[]
+            {
+                new
+                {
+                    invoiceCodeNumber = document.InvoiceNumber,
+                    error = new
+                    {
+                        code = "CF3151",
+                        message = "Buyer TIN is invalid",
+                        details = new[]
+                        {
+                            new { code = "CF3151", message = "TIN 'INVALIDTIN' does not exist in LHDN registry", target = "buyerTin" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = JsonContent.Create(tokenResponse)
+            });
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK, // 200 — LHDN always returns 200 for submission envelope
+                Content = JsonContent.Create(submissionResponse)
+            });
+
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
+
+        // Act
+        var result = await _sut.Submit(document);
+
+        // Assert
+        result.Status.Should().Be("Failed");
+        result.ErrorCode.Should().Be("CF3151");
+        result.ErrorMessage.Should().Contain("Buyer TIN is invalid");
+        result.ErrorMessage.Should().Contain("CF3151"); // detail code concatenated after " | "
+        result.ErrorMessage.Should().Contain("does not exist in LHDN registry"); // detail message included
+    }
+
+    [Fact]
+    public async Task Submit_Http200WithRejectedDocuments_NoRetryAttempted()
+    {
+        // A rejection inside rejectedDocuments must NOT trigger Polly retry —
+        // LHDN returned 200, so the HTTP layer is healthy; retrying would re-submit the same bad invoice.
+        var document = CreateValidMyInvoiceDocument();
+
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
+        var submissionResponse = new
+        {
+            submissionUid = "SUB-TEST-002",
+            acceptedDocuments = Array.Empty<object>(),
+            rejectedDocuments = new[]
+            {
+                new
+                {
+                    invoiceCodeNumber = document.InvoiceNumber,
+                    error = new { code = "CF321", message = "Invoice date too old", details = Array.Empty<object>() }
+                }
+            }
+        };
+
+        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(submissionResponse) });
+
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
+
+        // Act
+        var result = await _sut.Submit(document);
+
+        // Assert — Failed with correct code
+        result.Status.Should().Be("Failed");
+        result.ErrorCode.Should().Be("CF321");
+
+        // Submission endpoint called exactly once — no retry on HTTP 200 rejection
+        httpMessageHandlerMock.Protected().Verify(
+            "SendAsync",
+            Times.Once(),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
     #endregion
 
     #region Helper Methods
 
-    private MyInvoiceDocument CreateValidMyInvoiceDocument()
+    private static MyInvoiceDocument CreateValidMyInvoiceDocument()
     {
         return new MyInvoiceDocument
         {
@@ -675,9 +610,9 @@ public class MyInvoiceSubmitterTests
             TotalTax = 60.00m,
             TotalInclTax = 1060.00m,
             PayableAmount = 1060.00m,
-            Lines = new List<MyInvoiceLine>
-            {
-                new MyInvoiceLine
+            Lines =
+            [
+                new()
                 {
                     LineNumber = 1,
                     ItemNumber = "ITEM001",
@@ -692,8 +627,166 @@ public class MyInvoiceSubmitterTests
                     TaxAmount = 60.00m,
                     LineTotalInclTax = 1060.00m
                 }
-            }
+            ]
         };
+    }
+
+    #endregion
+
+    #region GetSubmissionStatus Tests
+
+    private HttpClient CreateHttpClientWithResponse(HttpStatusCode statusCode, object? body)
+    {
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = statusCode,
+                Content = body is null
+                    ? new StringContent("")
+                    : JsonContent.Create(body)
+            });
+        return new HttpClient(handler.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+    }
+
+    private void SetupTokenAndDetailsClient(HttpClient tokenClient, HttpClient detailsClient)
+    {
+        // First call → token, subsequent calls → details
+        var callCount = 0;
+        _httpClientFactoryMock
+            .Setup(f => f.CreateClient("MyInvois"))
+            .Returns(() => callCount++ == 0 ? tokenClient : detailsClient);
+    }
+
+    private HttpClient CreateTokenClient()
+        => CreateHttpClientWithResponse(HttpStatusCode.OK, new
+        {
+            access_token = "test-token",
+            token_type = "Bearer",
+            expires_in = 3600
+        });
+
+    [Fact]
+    public async Task GetSubmissionStatus_ValidUUID_ReturnsStatusFromApi()
+    {
+        // Arrange
+        var uuid = "WAFDWH4YEA7BEMFEF10X0GRK10";
+        var detailsBody = new
+        {
+            uuid,
+            submissionUid = "SUB001",
+            internalId = "INV-001",
+            status = "Valid",
+            dateTimeValidated = "2026-05-14T12:00:00Z"
+        };
+
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus(uuid);
+
+        // Assert
+        status.Should().Be("Valid");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_InvalidDocument_ReturnsInvalidStatus()
+    {
+        // Arrange
+        var detailsBody = new { uuid = "BAD-UUID", status = "Invalid" };
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("BAD-UUID");
+
+        // Assert
+        status.Should().Be("Invalid");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_StillProcessing_ReturnsSubmittedStatus()
+    {
+        // Arrange — Step 08 not yet complete
+        var detailsBody = new { uuid = "PENDING-UUID", status = "Submitted" };
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("PENDING-UUID");
+
+        // Assert
+        status.Should().Be("Submitted");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_ApiReturnsNotFound_ReturnsNull()
+    {
+        // Arrange
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.NotFound, null));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("UNKNOWN-UUID");
+
+        // Assert
+        status.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_ApiReturnsServerError_ReturnsNull()
+    {
+        // Arrange
+        SetupTokenAndDetailsClient(CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.InternalServerError, null));
+
+        // Act
+        var status = await _sut.GetSubmissionStatus("ANY-UUID");
+
+        // Assert
+        status.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_EmptyUUID_ThrowsArgumentException()
+    {
+        // Act
+        var act = async () => await _sut.GetSubmissionStatus(string.Empty);
+
+        // Assert
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithParameterName("myInvoisUUID");
+    }
+
+    [Fact]
+    public async Task GetSubmissionStatus_UrlContainsUUID()
+    {
+        // Arrange — capture the request URL
+        var uuid = "WAFDWH4YEA7BEMFEF10X0GRK10";
+        HttpRequestMessage? capturedRequest = null;
+
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((req, _) => capturedRequest = req)
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = JsonContent.Create(new { uuid, status = "Valid" })
+            });
+
+        var detailsClient = new HttpClient(handler.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        SetupTokenAndDetailsClient(CreateTokenClient(), detailsClient);
+
+        // Act
+        await _sut.GetSubmissionStatus(uuid);
+
+        // Assert — URL must contain the UUID
+        capturedRequest!.RequestUri!.ToString().Should().Contain(uuid);
     }
 
     #endregion

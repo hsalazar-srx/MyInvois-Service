@@ -50,4 +50,9 @@ public class CompanyDetails
     /// Registered Address
     /// </summary>
     public string? Address { get; set; }
+
+    /// <summary>
+    /// Company phone number (≥8 chars, required by LHDN Contact block).
+    /// </summary>
+    public string? Phone { get; set; }
 }

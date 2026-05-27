@@ -72,7 +72,12 @@ public class MyInvoiceDocument
     /// Supplier Address
     /// </summary>
     public string? SupplierAddress { get; set; }
-    
+
+    /// <summary>
+    /// Supplier phone number (≥8 chars required by LHDN). Defaults to "60000000" if empty.
+    /// </summary>
+    public string? SupplierPhone { get; set; }
+
     // ===== BUYER BLOCK (Accounting Customer Party) =====
     
     /// <summary>
@@ -99,7 +104,12 @@ public class MyInvoiceDocument
     /// Buyer Address
     /// </summary>
     public string? BuyerAddress { get; set; }
-    
+
+    /// <summary>
+    /// Buyer phone number (≥8 chars required by LHDN). Defaults to "60000000" if empty.
+    /// </summary>
+    public string? BuyerPhone { get; set; }
+
     // ===== TOTALS =====
     
     /// <summary>

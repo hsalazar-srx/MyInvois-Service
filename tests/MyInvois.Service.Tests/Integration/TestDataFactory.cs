@@ -63,13 +63,61 @@ public static class TestDataFactory
     }
 
     /// <summary>
-    /// Create a valid Purchase invoice
+    /// Create a valid Purchase (AP/self-billed) invoice.
+    /// Supplier = external vendor; Buyer = our company (party roles are swapped vs AR).
+    /// DocumentTypeCode maps to "11" (self-billed invoice) per LHDN SDK v1.5.
     /// </summary>
     public static MovexInvoice CreateValidPurchaseInvoice(string? invoiceNumber = null)
     {
-        var inv = CreateValidSalesInvoice(invoiceNumber);
-        inv.InvoiceType = "Purchase";
-        return inv;
+        var invNum = invoiceNumber ?? $"AP-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..6]}";
+
+        return new MovexInvoice
+        {
+            InvoiceNumber = invNum,
+            InvoiceDate = DateTime.UtcNow.ToString("yyyyMMdd"),
+            InvoiceType = "Purchase",
+            CompanyCode = "100",
+            CurrencyCode = "MYR",
+            ExchangeRate = 1.0m,
+            TotalExclTax = 500.00m,
+            TotalTax = 0.00m,       // AP invoices are zero-rated for Malaysian SST
+            TotalInclTax = 500.00m,
+            // AP: external supplier is the invoice issuer
+            Supplier = new InvoiceParty
+            {
+                TIN = "C88888888888",
+                Name = "Test Supplier Sdn Bhd",
+                BRN = "202001054321",
+                IdScheme = "BRN",
+                Address = "789 Jalan Pembekal, Johor Bahru"
+            },
+            // AP: our company is the buyer (self-billing)
+            Buyer = new InvoiceParty
+            {
+                TIN = "C00000000000",
+                Name = "SRX Engineering Sdn Bhd",
+                BRN = "202301012345",
+                IdScheme = "BRN",
+                Address = "123 Jalan Utama, KL"
+            },
+            Lines = new List<InvoiceLine>
+            {
+                new()
+                {
+                    LineNumber = 1,
+                    ItemNumber = "MAT-001",
+                    Description = "Raw Material Purchase",
+                    ClassificationCode = "022",
+                    Quantity = 5,
+                    UnitOfMeasure = "EA",
+                    UnitPrice = 100.00m,
+                    LineTotal = 500.00m,
+                    TaxCode = "00",
+                    TaxRate = 0.0m,
+                    TaxAmount = 0.00m
+                }
+            }
+        };
     }
 
     /// <summary>

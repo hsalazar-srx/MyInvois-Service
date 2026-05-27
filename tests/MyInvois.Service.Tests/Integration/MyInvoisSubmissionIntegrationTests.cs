@@ -48,12 +48,12 @@ public class MyInvoisSubmissionIntegrationTests
         // Token endpoint returns valid token
         SetupTokenResponse(httpMessageHandlerMock);
 
-        // Submission endpoint returns success with UUID
+        // Submission endpoint returns LHDN envelope with accepted document
         var submissionResponse = new
         {
-            uuid = "DOC-UUID-67890",
-            submissionDate = DateTime.UtcNow.ToString("o"),
-            status = "Valid"
+            submissionUid = "SUB-INT-001",
+            acceptedDocuments = new[] { new { uuid = "DOC-UUID-67890", invoiceCodeNumber = "INV-001" } },
+            rejectedDocuments = Array.Empty<object>()
         };
 
         httpMessageHandlerMock.Protected()
@@ -227,14 +227,14 @@ public class MyInvoisSubmissionIntegrationTests
                     StatusCode = HttpStatusCode.OK,
                     Content = new StringContent(JsonSerializer.Serialize(new
                     {
-                        uuid = "DOC-UUID-RETRY",
-                        submissionDate = DateTime.UtcNow.ToString("o"),
-                        status = "Valid"
+                        submissionUid = "SUB-INT-RETRY",
+                        acceptedDocuments = new[] { new { uuid = "DOC-UUID-RETRY", invoiceCodeNumber = "INV-RETRY" } },
+                        rejectedDocuments = Array.Empty<object>()
                     }))
                 };
             });
 
-        var submitter = CreateSubmitter(httpMessageHandlerMock.Object);
+        var submitter = CreateSubmitter(httpMessageHandlerMock.Object, retrySleepProvider: _ => TimeSpan.Zero);
         var document = TestDataFactory.CreateValidDocument("INV-RETRY");
 
         // Act
@@ -247,16 +247,25 @@ public class MyInvoisSubmissionIntegrationTests
 
     #region Helpers
 
-    private MyInvoiceSubmitter CreateSubmitter(HttpMessageHandler handler)
+    private MyInvoiceSubmitter CreateSubmitter(
+        HttpMessageHandler handler,
+        Func<int, TimeSpan>? retrySleepProvider = null)
     {
         var httpClient = new HttpClient(handler);
         var httpClientFactoryMock = new Mock<IHttpClientFactory>();
         httpClientFactoryMock.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
+        var tokenService = new MyInvoisTokenService(
+            httpClientFactoryMock.Object,
+            Options.Create(_settings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+
         return new MyInvoiceSubmitter(
             httpClientFactoryMock.Object,
             Options.Create(_settings),
-            _loggerMock.Object);
+            tokenService,
+            _loggerMock.Object,
+            retrySleepProvider);
     }
 
     private void SetupTokenResponse(Mock<HttpMessageHandler> handlerMock)

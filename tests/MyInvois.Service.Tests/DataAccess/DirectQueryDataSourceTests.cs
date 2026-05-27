@@ -38,35 +38,35 @@ public class DirectQueryDataSourceTests
         };
     }
 
+    private MovexLineItemFetcher MakeFetcher() => new(
+        Options.Create(_settings),
+        new Mock<ILogger<MovexLineItemFetcher>>().Object);
+
     [Fact]
     public void Constructor_WithNullSettings_ThrowsArgumentNullException()
     {
-        // Act & Assert
         Assert.Throws<ArgumentNullException>(() =>
-            new DirectQueryDataSource(null!, _loggerMock.Object));
+            new DirectQueryDataSource(null!, _loggerMock.Object, MakeFetcher()));
     }
 
     [Fact]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        // Arrange
-        var options = Options.Create(_settings);
-
-        // Act & Assert
         Assert.Throws<ArgumentNullException>(() =>
-            new DirectQueryDataSource(options, null!));
+            new DirectQueryDataSource(Options.Create(_settings), null!, MakeFetcher()));
+    }
+
+    [Fact]
+    public void Constructor_WithNullLineItemFetcher_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new DirectQueryDataSource(Options.Create(_settings), _loggerMock.Object, null!));
     }
 
     [Fact]
     public void Constructor_WithValidParams_CreatesInstance()
     {
-        // Arrange
-        var options = Options.Create(_settings);
-
-        // Act
-        var sut = new DirectQueryDataSource(options, _loggerMock.Object);
-
-        // Assert
+        var sut = new DirectQueryDataSource(Options.Create(_settings), _loggerMock.Object, MakeFetcher());
         sut.Should().NotBeNull();
     }
 
@@ -101,11 +101,8 @@ public class DirectQueryDataSourceTests
     [InlineData("Purchase")]
     public async Task GetInvoiceByIdAsync_WithInvalidType_ThrowsArgumentException(string invalidType)
     {
-        // Arrange
-        var options = Options.Create(_settings);
-        var sut = new DirectQueryDataSource(options, _loggerMock.Object);
+        var sut = new DirectQueryDataSource(Options.Create(_settings), _loggerMock.Object, MakeFetcher());
 
-        // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(() =>
             sut.GetInvoiceByIdAsync("INV001", invalidType));
     }

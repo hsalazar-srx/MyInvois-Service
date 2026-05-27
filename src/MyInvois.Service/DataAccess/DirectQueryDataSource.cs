@@ -13,29 +13,29 @@ using MyInvois.Service.Configuration;
 /// Queries MOVEX ledger tables (fpledg, fsledg, fgledg) on IBM DB2/AS400.
 /// SQL patterns from src/Database/AP_AR_Invoices_CMP100_CMP300.sql
 ///
-/// NuGet dependencies:
-/// - Dapper (lightweight result mapping)
-/// - System.Data.Odbc (DB2 connectivity via ODBC driver)
-///
 /// Company isolation: Only companies listed in ActiveCompanyCodes are queried.
 /// Production (CMP100) and testing (CMP300) are separated by environment config:
 ///   appsettings.Production.json → ActiveCompanyCodes: ["100"]
 ///   appsettings.Development.json → ActiveCompanyCodes: ["300"]
+///
+/// Line-item retrieval is delegated to <see cref="MovexLineItemFetcher"/>.
 /// </summary>
 public class DirectQueryDataSource : IInvoiceDataSource
 {
     private readonly MovexDbSettings _settings;
     private readonly ILogger<DirectQueryDataSource> _logger;
+    private readonly MovexLineItemFetcher _lineItemFetcher;
     private readonly Dictionary<string, string> _companySchemas;
 
     public DirectQueryDataSource(
-        IOptions<MovexDbSettings> settings,
-        ILogger<DirectQueryDataSource> logger)
+        IOptions<MovexDbSettings>       settings,
+        ILogger<DirectQueryDataSource>  logger,
+        MovexLineItemFetcher            lineItemFetcher)
     {
-        _settings = settings?.Value ?? throw new ArgumentNullException(nameof(settings));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _settings        = settings?.Value   ?? throw new ArgumentNullException(nameof(settings));
+        _logger          = logger            ?? throw new ArgumentNullException(nameof(logger));
+        _lineItemFetcher = lineItemFetcher   ?? throw new ArgumentNullException(nameof(lineItemFetcher));
 
-        // Build schema lookup from settings — extensible without hardcoded switch
         _companySchemas = new Dictionary<string, string>
         {
             ["100"] = _settings.SchemaCmp100,
@@ -50,8 +50,10 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 10: Supplier Invoice only — excludes payments (20), write-offs (30), adjustments (40), FX (50), reversals (90)
-        var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 50 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";// AND p.eptrcd = 10";
-       //var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCHNO = 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        // BUG FIX (Sprint 7): was BETWEEN ? AND ? but only 1 param supplied — changed to >= ? (no upper bound for "pending")
+        // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 (FX revaluations) — corrected to 10 (supplier invoices)
+        // Country filter (idcscd <> 'MY') pending clarification: may need to include domestic suppliers — see Finance email thread
+        var apWhere = "p.epacdt >= ? AND p.eptrcd = 10 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
         var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
@@ -86,12 +88,14 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
             if (invoiceType == "AP")
             {
-                var sql = BuildApHeaderSql(schema, "TRIM(p.epsino) = ?");// AND p.eptrcd = 10");
+                var sql        = BuildApHeaderSql(schema, "TRIM(p.epsino) = ? AND p.eptrcd = 10");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
 
                 record = (await connection.QueryAsync<RawInvoiceRecord>(
-                    new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    new CommandDefinition(sql, parameters,
+                        commandTimeout: _settings.CommandTimeoutSeconds,
+                        cancellationToken: cancellationToken)))
                     .FirstOrDefault();
 
                 if (record != null)
@@ -102,7 +106,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ?");
+                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
@@ -110,7 +114,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
                 parameters.Add("p3", _settings.ArCustomerStatus);
 
                 record = (await connection.QueryAsync<RawInvoiceRecord>(
-                    new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    new CommandDefinition(sql, parameters,
+                        commandTimeout: _settings.CommandTimeoutSeconds,
+                        cancellationToken: cancellationToken)))
                     .FirstOrDefault();
 
                 if (record != null)
@@ -122,7 +128,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
             if (record != null)
             {
-                await FetchLineItemsAsync(connection, schema, new List<RawInvoiceRecord> { record }, cancellationToken);
+                await _lineItemFetcher.FetchAndAttachAsync(
+                    connection, schema, new List<RawInvoiceRecord> { record }, cancellationToken);
                 return record;
             }
         }
@@ -155,10 +162,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
         return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
 
-    /// <summary>
-    /// Get the schema name for a company code.
-    /// CMP100 → mvxcdta, CMP300 → mvxc300 (configurable via MovexDbSettings)
-    /// </summary>
+    // ── Private helpers ──────────────────────────────────────────────────────
+
     private string GetSchemaForCompany(string companyCode)
     {
         if (_companySchemas.TryGetValue(companyCode, out var schema))
@@ -172,7 +177,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
     private static int ToMovexDate(DateTime date) => date.Year * 10000 + date.Month * 100 + date.Day;
 
     private async Task<List<RawInvoiceRecord>> QueryAllCompaniesAsync(
-        string apWhereClause, string arWhereClause, DynamicParameters apParameters, DynamicParameters arParameters, CancellationToken cancellationToken)
+        string apWhereClause, string arWhereClause,
+        DynamicParameters apParameters, DynamicParameters arParameters,
+        CancellationToken cancellationToken)
     {
         var allRecords = new List<RawInvoiceRecord>();
 
@@ -185,10 +192,11 @@ public class DirectQueryDataSource : IInvoiceDataSource
                 await using var connection = CreateConnection();
                 await connection.OpenAsync(cancellationToken);
 
-                // Query AP (Purchase) invoices
-                var apSql = BuildApHeaderSql(schema, apWhereClause);
+                var apSql     = BuildApHeaderSql(schema, apWhereClause);
                 var apRecords = (await connection.QueryAsync<RawInvoiceRecord>(
-                    new CommandDefinition(apSql, apParameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    new CommandDefinition(apSql, apParameters,
+                        commandTimeout: _settings.CommandTimeoutSeconds,
+                        cancellationToken: cancellationToken)))
                     .ToList();
 
                 foreach (var r in apRecords)
@@ -197,10 +205,11 @@ public class DirectQueryDataSource : IInvoiceDataSource
                     r.CompanyCode = companyCode;
                 }
 
-                // Query AR (Sales) invoices — no GstAmount column in fsledg
-                var arSql = BuildArHeaderSql(schema, arWhereClause);
+                var arSql     = BuildArHeaderSql(schema, arWhereClause);
                 var arRecords = (await connection.QueryAsync<RawInvoiceRecord>(
-                    new CommandDefinition(arSql, arParameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
+                    new CommandDefinition(arSql, arParameters,
+                        commandTimeout: _settings.CommandTimeoutSeconds,
+                        cancellationToken: cancellationToken)))
                     .ToList();
 
                 foreach (var r in arRecords)
@@ -211,11 +220,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
                 var companyRecords = apRecords.Concat(arRecords).ToList();
 
-                // Fetch line items for all headers in this company
                 if (companyRecords.Count > 0)
-                {
-                    await FetchLineItemsAsync(connection, schema, companyRecords, cancellationToken);
-                }
+                    await _lineItemFetcher.FetchAndAttachAsync(connection, schema, companyRecords, cancellationToken);
 
                 allRecords.AddRange(companyRecords);
 
@@ -224,7 +230,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             catch (OdbcException ex)
             {
-                _logger.LogError(ex, "DB2 query failed for company {CompanyCode}. SQLSTATE: {SqlState}, NativeError: {NativeError}",
+                _logger.LogError(ex,
+                    "DB2 query failed for company {CompanyCode}. SQLSTATE: {SqlState}, NativeError: {NativeError}",
                     companyCode, ex.Errors[0]?.SQLState, ex.Errors[0]?.NativeError);
                 throw;
             }
@@ -235,6 +242,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         return allRecords;
     }
+
+    // ── Header SQL builders ──────────────────────────────────────────────────
 
     private static string BuildApHeaderSql(string schema, string whereClause) =>
         $@"SELECT DISTINCT
@@ -250,7 +259,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             TRIM(g.egait1) AS GlCode
         FROM {schema}.fpledg p
         LEFT JOIN (
-            SELECT 
+            SELECT
                 egcono,
                 egdivi,
                 egyea4,
@@ -258,7 +267,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
                 MIN(egait1) AS egait1
             FROM {schema}.fgledg
             WHERE TRIM(egait1) NOT IN ('769')   -- exclude rows with AP control account 769
-            GROUP BY 
+            GROUP BY
                 egcono,
                 egdivi,
                 egyea4,
@@ -281,6 +290,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
             f.ESCUAM AS InvoiceAmount,
             TRIM(f.ESDIVI) AS Division,
             TRIM(f.ESTRCD) AS TransCode,
+            TRIM(f.ESPYNO) AS PayerNo,
+            TRIM(CHAR(f.ESVONO)) AS VoucherNumber,
             TRIM(o.OKSTAT) AS CustomerStatus,
             TRIM(o.OKCUNM) AS CustomerName,
             TRIM(o.OKCUA1) AS MasterAddress1,
@@ -299,103 +310,4 @@ public class DirectQueryDataSource : IInvoiceDataSource
         LEFT JOIN {schema}.OCUSAD a
             ON a.OPCONO = f.ESCONO AND a.OPCUNO = f.ESCUNO AND a.OPADID = 'INV01'
         WHERE {whereClause}";
-
-    private static string BuildLineItemsSql(string schema, int batchSize)
-    {
-        var placeholders = string.Join(",", Enumerable.Range(0, batchSize).Select(i => "?"));
-        return $@"SELECT
-            TRIM(ol.OIIVNO) AS InvoiceNo,
-            ol.OILVNO AS LineNumber,
-            TRIM(ol.OILITNO) AS ItemNumber,
-            TRIM(ol.OILITDS) AS Description,
-            COALESCE(TRIM(im.ITCL), '000') AS ClassificationCode,
-            ol.OILQA AS Quantity,
-            COALESCE(TRIM(ol.OILUN), 'EA') AS UnitOfMeasure,
-            ol.OILSA AS UnitPrice,
-            ol.OILQA * ol.OILSA AS LineTotal,
-            --COALESCE(TRIM(ol.OILVTCD), '') AS TaxCode,
-            --COALESCE(ol.OILVTRT, 0) AS TaxRate,
-            COALESCE(ol.ONVTAM, 0) AS TaxAmount
-        FROM {schema}.OINVOL ol
-        LEFT JOIN {schema}.MITMAS im ON ol.OILITNO = im.ITNO
-        WHERE TRIM(ol.OIIVNO) IN ({placeholders})
-        ORDER BY ol.OIIVNO, ol.OILVNO";
-    }
-
-    private async Task FetchLineItemsAsync(
-        OdbcConnection connection, string schema, List<RawInvoiceRecord> headers, CancellationToken cancellationToken)
-    {
-        try
-        {
-            const int batchSize = 100;
-            var invoiceNumbers = headers.Select(h => h.InvoiceNo).Distinct().ToList();
-
-            for (var i = 0; i < invoiceNumbers.Count; i += batchSize)
-            {
-                var batch = invoiceNumbers.Skip(i).Take(batchSize).ToList();
-                var sql = BuildLineItemsSql(schema, batch.Count);
-
-                var parameters = new DynamicParameters();
-                for (var j = 0; j < batch.Count; j++)
-                {
-                    parameters.Add($"p{j}", batch[j]);
-                }
-
-                var lineItems = (await connection.QueryAsync<LineItemDto>(
-                    new CommandDefinition(sql, parameters, commandTimeout: _settings.CommandTimeoutSeconds, cancellationToken: cancellationToken)))
-                    .ToList();
-
-                // Group by invoice number and assign to headers
-                var grouped = lineItems.GroupBy(l => l.InvoiceNo);
-                foreach (var group in grouped)
-                {
-                    var header = headers.FirstOrDefault(h => h.InvoiceNo == group.Key);
-                    if (header != null)
-                    {
-                        header.Lines = group.Select(l => l.ToLineRecord()).ToList();
-                    }
-                }
-            }
-        }
-        catch (OdbcException ex)
-        {
-            // Line items are optional — if the query fails, log and continue
-            _logger.LogWarning(ex, "Failed to fetch line items for schema {Schema}. " +
-                "Line items query may need schema adjustment. Continuing without line items.", schema);
-        }
-    }
-
-    /// <summary>
-    /// Internal DTO for line item query — includes InvoiceNo for grouping.
-    /// </summary>
-    private class LineItemDto
-    {
-        public string InvoiceNo { get; set; } = string.Empty;
-        public int LineNumber { get; set; }
-        public string ItemNumber { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public string ClassificationCode { get; set; } = string.Empty;
-        public decimal Quantity { get; set; }
-        public string UnitOfMeasure { get; set; } = "EA";
-        public decimal UnitPrice { get; set; }
-        public decimal LineTotal { get; set; }
-        public string TaxCode { get; set; } = string.Empty;
-        public decimal TaxRate { get; set; }
-        public decimal TaxAmount { get; set; }
-
-        public RawInvoiceLineRecord ToLineRecord() => new()
-        {
-            LineNumber = LineNumber,
-            ItemNumber = ItemNumber,
-            Description = Description,
-            ClassificationCode = ClassificationCode,
-            Quantity = Quantity,
-            UnitOfMeasure = UnitOfMeasure,
-            UnitPrice = UnitPrice,
-            LineTotal = LineTotal,
-            TaxCode = TaxCode,
-            TaxRate = TaxRate,
-            TaxAmount = TaxAmount
-        };
-    }
 }

@@ -1,571 +1,561 @@
 # MyInvois-Service — Deployment Runbook
 
-**Target Audience:** IT Operations  
-**Version:** 1.0-MVAI  
-**Status:** Pre-Production (Mar 31, 2026)
+**Target Audience:** IT Operations / Development Lead
+**Version:** 2.0
+**Last Updated:** 2026-05-25
+**Status:** UAT Active (pre-prod LHDN endpoint)
+
+---
+
+## Overview
+
+MyInvois-Service is an ASP.NET Core 8 Worker + API host (`MyInvois.Api`) deployed as a
+long-running Windows process on **SRXWEBAPP1**. It:
+
+1. Runs a **daily batch** at 02:00 via `DailyBatchHostedService` (controlled by `BatchScheduler:Enabled`)
+2. Exposes a **manual trigger** at `POST /api/v1/batch/process-range` (API-Key protected)
+3. Persists an **audit log** to SQLite (`audit.db`, WAL mode, 7-year retention)
+
+The daily scheduler is **not** Windows Task Scheduler — it is an in-process `BackgroundService`.
+Keeping the process alive (as a Windows Service or IIS-hosted app) is all that is needed.
 
 ---
 
 ## Pre-Deployment Checklist
 
-**72 Hours Before Go-Live**
+### Infrastructure
 
-### Infrastructure & Certificate
-- [ ] **Certificate**: Digital certificate received from Finance, stored in encrypted directory (`C:\Certs\MyInvois`)
-- [ ] **Certificate Storage**: Windows EFS encryption enabled, NTFS permissions restricted to service account
-- [ ] **Certificate Password**: Stored securely (Windows Credential Manager or DPAPI)
-- [ ] **Certificate Access**: Service account can read certificate (test script passed)
-- [ ] **Certificate Backup**: Encrypted backup created and verified in offsite location
-- [ ] **Monitoring Script**: Certificate expiry monitoring job deployed (daily check at 06:00 AM)
-- [ ] **Disaster Recovery**: Documented recovery procedure, test restore completed
+- [ ] SRXWEBAPP1 accessible; IIS running
+- [ ] IBM i Access ODBC Driver installed (`iSeries Access for Windows` or `IBM i Access Client Solutions`)
+- [ ] .NET 8.0 Hosting Bundle installed (`dotnet-hosting-win.exe`)
+- [ ] `sqlite3.exe` installed for audit log inspection (`winget install SQLite.SQLite`)
+- [ ] Firewall allows outbound HTTPS to `preprod-api.myinvois.hasil.gov.my` (port 443)
+- [ ] Firewall allows outbound ODBC to AS400 (port 446 or 8471)
 
-### Database & Configuration
-- [ ] **Audit DB directory**: `C:\inetpub\wwwroot\MyInvois\data\` exists with NTFS ACL restricted to service account
-- [ ] **SQLite init**: `audit.db` created on first startup (EF Core `EnsureCreated`) — verify file present after first run
-- [ ] **WAL mode**: Confirmed enabled (check `PRAGMA journal_mode;` returns `wal`)
-- [ ] **Backup**: SQLite daily backup script scheduled (see Backup & Disaster Recovery section)
-- [ ] **Network**: Firewall rules allowing MOVEX DB2/AS400 (port 446/8471) & MyInvois API access
-- [ ] **Configuration**: All settings validated in production appsettings.json (CertificateSettings section populated)
+### Certificate
 
-**24 Hours Before**
+- [ ] Trial cert file present: `C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12`
+- [ ] Trial cert expiry confirmed: **2026-09-05** (production cert required before go-live)
+- [ ] NTFS ACL on `C:\Certs\MyInvois\` restricted to service account + Administrators
+- [ ] EFS encryption enabled on `C:\Certs\MyInvois\`
 
-- [ ] **Certificate Test**: Signature generation test passed in MyInvois sandbox
-- [ ] **Dry run**: Process 100 test invoices successfully
-- [ ] **Monitoring**: Certificate expiry monitoring verified (logs show daily checks)
-- [ ] **Alerting**: Email alerts configured for Finance + Infrastructure teams
-- [ ] **Rollback plan**: Documented procedure to revert to pre-MVAI state, backup verified
-- [ ] **Support**: On-call team briefed on common issues (especially certificate-related)
+### Data directory
+
+- [ ] `E:\data\` exists
+- [ ] App pool identity (`IIS_IUSRS` or dedicated pool) has **write** access to that directory
+- [ ] `audit.db` will be created automatically on first startup — do NOT create manually
 
 ---
 
-## Deployment Steps
+## Step 1 — Build the Release Package
 
-### 1. Build Release Package
-
-```powershell
-# From project root
-dotnet publish -c Release -o .\publish\
-```
-
-**Expected:** Executable in `.\publish\MyInvois.Service.exe`
-
-### 2. Transfer to Target Server
-
-Copy build artifacts to production server:
-```
-C:\Services\MyInvois-Service\
-```
-
-**Folder structure:**
-```
-C:\Services\MyInvois-Service\
-├── MyInvois.Service.exe
-├── MyInvois.Service.dll
-├── appsettings.json
-├── appsettings.Production.json
-├── ...
-└── database\
-    └── backups\
-```
-
-### 3. Configure Production Secrets
-
-On production server, set via **Encrypted Server Storage** (certificate) and **environment variables**:
+Run from your development machine:
 
 ```powershell
-# Set MOVEX DB2/AS400 connection
-$env:MOVEX_DB_CONNECTION = "Server=PROD_AS400;Database=PROD_DB;UserID=svc_myinvois;Password=prod_password;"
+cd "c:\Projects\MyInvois-Service"
 
-# Set MyInvois credentials
-$env:MYINVOIS_CLIENT_ID = "prod_client_id"
-$env:MYINVOIS_CLIENT_SECRET = "prod_client_secret"
+# 1a. Confirm all 276 tests pass before building
+dotnet test --configuration Release --filter "Category!=Smoke"
+# Expected: Passed! Failed: 0, Passed: 276
 
-# Set SQLite audit log connection string (optional override — defaults to ./data/audit.db relative to app content root)
-$env:ConnectionStrings__AuditLog = "Data Source=C:\inetpub\wwwroot\MyInvois\data\audit.db"
+# 1b. Publish
+dotnet publish src/MyInvois.Api/MyInvois.Api.csproj `
+    --configuration Release `
+    --output ".\publish\uat\" `
+    --runtime win-x64 `
+    --self-contained false
 
-# Certificate password is retrieved from Windows Credential Manager (not environment variable)
-# It was stored during infrastructure setup: cmdkey /add:MyInvoisCert /user:admin /pass:*
+# 1c. Verify output
+Get-ChildItem ".\publish\uat\" | Select-Object Name, Length
+# Must include: MyInvois.Api.exe, MyInvois.Api.dll, appsettings.json
 ```
 
-Or update `appsettings.Production.json`:
+---
+
+## Step 2 — Prepare the UAT Configuration Override
+
+Create `appsettings.UAT.json` **on SRXWEBAPP1** (never commit this file — it contains secrets).
+Place it alongside the published files in `C:\inetpub\wwwroot\MyInvois\`.
+
 ```json
 {
-  "ConnectionStrings": {
-    "AuditLog": "Data Source=C:\\inetpub\\wwwroot\\MyInvois\\data\\audit.db"
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "MyInvois": "Debug"
+    }
   },
-  "CertificateSettings": {
-    "StoragePath": "C:\\Certs\\MyInvois\\myinvois-cert.pfx",
-    "PasswordReference": "Credential:MyInvoisCert",
-    "Thumbprint": "FROM_FINANCE_DOCUMENTATION",
-    "ValidityCheckIntervalDays": 14
+  "ConnectionStrings": {
+    "AuditLog": "Data Source=E:\\data\\audit.db"
+  },
+  "MovexDb": {
+    "ConnectionString": "<MOVEX ODBC connection string — from IT Ops>",
+    "ActiveCompanyCodes": [ "100" ],
+    "ArMinYear": 2025
+  },
+  "MyInvoisApi": {
+    "BaseUrl": "https://preprod-api.myinvois.hasil.gov.my",
+    "IdentityBaseUrl": "https://preprod-api.myinvois.hasil.gov.my",
+    "Environment": "preprod",
+    "CertificatePath": "C:\\Certs\\MyInvois\\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12",
+    "CertificatePassword": "<certificate password — from secure store>",
+    "ClientId": "a777bc19-e8b9-4adb-b793-7c8b64368a5a",
+    "ClientSecret": "<pre-prod client secret — from IT Ops>"
+  },
+  "ApiKeys": {
+    "Primary": "<generate with New-Guid — note it for SM-Portal config>",
+    "Admin":   "<generate with New-Guid>"
+  },
+  "BatchScheduler": {
+    "Enabled": true,
+    "DailyRunHour": 2,
+    "DailyRunMinute": 0,
+    "LookbackDays": 1
   }
 }
 ```
 
-**Certificate verification:**
+> **`BatchScheduler:Enabled: true`** is the only switch that controls the daily batch.
+> The old `EnableBatchProcessing` flag no longer exists — it was dead config and has been removed.
+>
+> `LookbackDays: 1` means each nightly run processes yesterday's invoices.
+> Increase to `7` temporarily if you need to catch up after a missed run.
+
+Set the environment variable on SRXWEBAPP1 so ASP.NET Core loads this file:
+
 ```powershell
-# Verify certificate file exists and is readable
-Test-Path "C:\Certs\MyInvois\myinvois-cert.pfx"
-
-# Verify directory is encrypted
-cipher /s:"C:\Certs\MyInvois"
-
-# Verify NTFS permissions are restricted
-icacls "C:\Certs\MyInvois" /T
+# Run on SRXWEBAPP1 — persistent, machine-level
+[System.Environment]::SetEnvironmentVariable(
+    "ASPNETCORE_ENVIRONMENT", "UAT",
+    [System.EnvironmentVariableTarget]::Machine)
 ```
 
-### 4. Start Service
+---
+
+## Step 3 — Create the Audit Data Directory
+
+Run on SRXWEBAPP1 as Administrator:
 
 ```powershell
-# Option A: As Console App (for initial testing)
-C:\Services\MyInvois-Service\MyInvois.Service.exe
+New-Item -ItemType Directory -Force "E:\data"
 
-# Option B: As Windows Service (Phase 2)
-# New-Service -Name "MyInvois-Service" -BinaryPathName "C:\Services\MyInvois-Service\MyInvois.Service.exe" -Credential (Get-Credential)
-# Start-Service -Name "MyInvois-Service"
+# Grant the app pool write access (adjust identity to match your IIS pool name)
+icacls "E:\data" /grant "IIS_IUSRS:(OI)(CI)F" /T
+
+# Verify
+icacls "E:\data"
 ```
 
-**Expected:** Service logs startup messages (check console or event log)
+EF Core creates `audit.db` automatically on first startup — do not create the file manually.
 
-### 5. Test Certificate & Signature Generation
+---
 
-Before production submission, validate the certificate works correctly:
+## Step 4 — Copy Build Artifacts to SRXWEBAPP1
 
 ```powershell
-# Test 1: Verify certificate is accessible
-$certPath = "C:\Certs\MyInvois\myinvois-cert.pfx"
-$password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-  [System.Runtime.InteropServices.Marshal]::SecureStringToCoTaskMemUnicode(
-    (Get-StoredCredential -Target 'MyInvoisCert').Password
-  )
-)
+# From your dev machine
+$dest = "\\SRXWEBAPP1\c$\inetpub\wwwroot\MyInvois"
+
+Copy-Item "c:\Projects\MyInvois-Service\publish\uat\*" $dest -Recurse -Force
+
+# Verify key files arrived
+Get-ChildItem $dest | Where-Object { $_.Name -match "MyInvois.Api|appsettings" }
+```
+
+Do not overwrite `appsettings.UAT.json` if it already exists on the server (it contains secrets).
+
+---
+
+## Step 5 — Verify the Certificate
+
+Run on SRXWEBAPP1:
+
+```powershell
+$certPath = "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12"
+$certPass = "<certificate password>"
+
+Test-Path $certPath   # Expected: True
 
 $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-  $certPath,
-  $password
-)
+    $certPath, $certPass)
 
-Write-Host "✓ Certificate Details:"
-Write-Host "  Subject: $($cert.Subject)"
-Write-Host "  Thumbprint: $($cert.Thumbprint)"
-Write-Host "  Valid From: $($cert.NotBefore)"
-Write-Host "  Expires: $($cert.NotAfter)"
-Write-Host "  Has Private Key: $($cert.HasPrivateKey)"
+Write-Host "Subject:      $($cert.Subject)"
+Write-Host "Expires:      $($cert.NotAfter)   (trial cert: 2026-09-05)"
+Write-Host "Has Priv Key: $($cert.HasPrivateKey)"   # Must be True
+Write-Host "Days left:    $(($cert.NotAfter - (Get-Date)).Days)"
 ```
 
-**Expected output:**
-```
-✓ Certificate Details:
-  Subject: CN=MyCompany, O=Organization, C=MY
-  Thumbprint: [40-character hex string]
-  Valid From: 2/18/2026
-  Expires: 2/18/2027 (or later)
-  Has Private Key: True
-```
+If `Has Priv Key` is `False`, the certificate file is corrupt or missing the private key — contact Finance.
 
-### 5.5: Test Signature Generation in MyInvois Sandbox
+---
+
+## Step 6 — First-Run Smoke Test (Console Mode)
+
+Start the application as a console process before registering it as a service:
 
 ```powershell
-# Generate test invoice XML (sample UBL 2.1)
-$testInvoiceXml = @'
-<?xml version="1.0" encoding="UTF-8"?>
-<Invoice>
-  <InvoiceNumber>TEST-2024-001</InvoiceNumber>
-  <InvoiceDate>2024-02-23</InvoiceDate>
-  <SupplierTIN>123456789012</SupplierTIN>
-  <Amount>100.00</Amount>
-</Invoice>
-'@
-
-# Sign the invoice
-$signature = [System.Convert]::ToBase64String(
-  $cert.PrivateKey.SignData(
-    [System.Text.Encoding]::UTF8.GetBytes($testInvoiceXml),
-    "SHA256"
-  )
-)
-
-Write-Host "✓ Signature generated successfully"
-Write-Host "  Length: $($signature.Length) characters"
-
-# Submit to MyInvois SANDBOX (not production)
-$body = @{
-  invoiceXml = $testInvoiceXml
-  signature = $signature
-  signatureMethod = "xmldsig"
-} | ConvertTo-Json
-
-$response = Invoke-WebRequest `
-  -Uri "https://sandbox.myinvois.hasil.gov.my/api/v1/submission" `
-  -Method POST `
-  -Body $body `
-  -ContentType "application/json" `
-  -Headers @{
-    Authorization = "Bearer [OAuth-Token-From-Finance]"
-  }
-
-if ($response.StatusCode -eq 200) {
-  Write-Host "✓ Sandbox submission successful"
-  Write-Host "  Submission UID: $(($response.Content | ConvertFrom-Json).uid)"
-}
-else {
-  Write-Host "✗ Sandbox submission failed: $($response.StatusCode)"
-  Write-Host "  Response: $($response.Content)"
-}
+# On SRXWEBAPP1
+cd "C:\inetpub\wwwroot\MyInvois"
+$env:ASPNETCORE_ENVIRONMENT = "UAT"
+.\MyInvois.Api.exe
 ```
 
-**Expected:**
+Watch for startup errors. Expected log output (Serilog JSON to console):
 ```
-HTTP 200 OK
+[INF] [] Now listening on: http://localhost:5000
+[INF] [] DailyBatchHostedService started. Next run at 02:00.
+[INF] [] Application started.
+```
+
+If you see `audit.db` creation messages, EF Core is initialising the database — that is expected.
+
+---
+
+## Step 7 — Manual Batch Trigger Test
+
+With the app running (Step 6), open a second PowerShell window on SRXWEBAPP1:
+
+```powershell
+$apiKey   = "<ApiKeys:Primary from appsettings.UAT.json>"
+$yesterday = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd")
+$today     = (Get-Date).ToString("yyyy-MM-dd")
+
+$response = Invoke-RestMethod `
+    -Uri "http://localhost:5000/api/v1/batch/process-range" `
+    -Method POST `
+    -Headers @{ "X-Api-Key" = $apiKey } `
+    -ContentType "application/json" `
+    -Body (@{ fromDate = $yesterday; toDate = $today } | ConvertTo-Json)
+
+$response | ConvertTo-Json
+```
+
+Expected response:
+```json
 {
-  "uid": "2024-02-23-001-12345",
-  "status": "ACCEPTED",
-  "timestamp": "2024-02-23T14:30:00Z",
-  "message": "Invoice submission successful"
+  "totalInvoices": 12,
+  "successCount": 12,
+  "failedCount": 0,
+  "skippedCount": 0,
+  "durationMs": 14200
 }
 ```
 
-### 6. Verify Service Health
-
+Check the audit DB immediately after:
 ```powershell
-# Check audit table row count (SQLite)
-$auditDb = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-$count = & sqlite3 "$auditDb" "SELECT COUNT(*) FROM AuditLogs;"
-Write-Host "Audit log row count: $count"
+$db = "E:\data\audit.db"
+sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisUUID FROM SubmissionAuditLog ORDER BY SubmittedAt DESC LIMIT 10;"
 ```
-
-**Expected:** Returns `0` (empty table ready for submissions)
 
 ---
 
-## MVAI Go-Live Procedure (Mar 31, 2026)
+## Step 8 — Confirm LHDN Pre-Prod Portal Shows Submissions
 
-### Morning Briefing (8:00 AM)
+Log in to the LHDN pre-prod portal and search for one of the submitted invoice numbers.
 
-- [ ] Confirm all systems online (MOVEX DB2/AS400, MyInvois sandbox, SQLite audit DB present)
-- [ ] Verify no pending issues from UAT
-- [ ] Distribute escalation contacts
+- Status immediately after submission: **Submitted**
+- Status after 2–5 minutes (Step 08 async validator): **Valid**
 
-### Dry Run (9:00 AM)
+> **HTTP 200 does not mean the invoice is valid.** Step 08 runs asynchronously 2–5 minutes later.
+> Always confirm **Valid** status in the portal before declaring the batch successful.
 
-```powershell
-# Process 10 test invoices (no actual MyInvois submission)
-dotnet MyInvois.Service.exe --process-batch --dry-run --max-invoices 10
-```
-
-**Expected:** All invoices validate successfully, audit log populated
-
-### Production Submission (10:00 AM)
-
-```powershell
-# Process February invoices (submit to MyInvois production)
-dotnet MyInvois.Service.exe --process-monthly-batch --environment production
-```
-
-**Monitor in real-time:**
-```powershell
-$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-
-# Check recent successful submissions
-& sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisUuid, Timestamp FROM AuditLogs WHERE Category='Integration' AND Action='MyInvois_Submit' ORDER BY Timestamp DESC LIMIT 20;"
-
-# Check failed submissions
-& sqlite3 $db "SELECT InvoiceNumber, ErrorMessage, RetryCount, Timestamp FROM AuditLogs WHERE Category='Integration' AND Status='Failed' ORDER BY Timestamp DESC;"
-
-# View summary
-& sqlite3 $db "SELECT Status, COUNT(*) AS Count FROM AuditLogs WHERE Category='Integration' AND Action='MyInvois_Submit' GROUP BY Status;"
-```
-
-**Success Criteria:**
-- ✅ ≥95% submissions successful
-- ✅ All submissions logged in audit table
-- ✅ No unexpected errors
-- ✅ MyInvois UUIDs returned for successful submissions
-
-### Post-Live Monitoring (2-4 PM)
-
-Check every 30 minutes:
-```powershell
-$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-& sqlite3 $db "SELECT Status, COUNT(*) AS Count, ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS Percentage FROM AuditLogs WHERE Category='MyInvois' AND datetime(Timestamp) > datetime('now', '-4 hours') GROUP BY Status;"
-```
-
-### Sign-Off (5:00 PM)
-
-- [ ] All invoices submitted
-- [ ] Success rate ≥95%
-- [ ] No critical errors
-- [ ] **Notify Finance team** of completion
+> **CF321 (date too old):** AP invoices carrying old supplier issue dates may receive this error
+> in pre-prod. This is an environmental constraint only — production submissions close to the
+> issue date will not trigger it.
 
 ---
 
-## Rollback Procedure (If Needed)
+## Step 9 — Register as Windows Service (Persistent)
 
-If critical issues arise during go-live:
-
-### Step 1: Stop Service
+Stop the console process from Step 6, then register the service:
 
 ```powershell
-Stop-Service -Name "MyInvois-Service" -Force
+# Run on SRXWEBAPP1 as Administrator
+New-Service `
+    -Name        "MyInvois-UAT" `
+    -BinaryPathName '"C:\inetpub\wwwroot\MyInvois\MyInvois.Api.exe"' `
+    -DisplayName "MyInvois UAT Service" `
+    -StartupType Automatic
+
+# Set environment so the UAT appsettings loads
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\MyInvois-UAT"
+New-ItemProperty -Path $regPath -Name "Environment" -PropertyType MultiString `
+    -Value "ASPNETCORE_ENVIRONMENT=UAT" -Force
+
+Start-Service -Name "MyInvois-UAT"
+Get-Service  -Name "MyInvois-UAT"   # Expected: Running
 ```
 
-### Step 2: Revert to Pre-MVAI State
-
+Verify the daily scheduler is armed:
 ```powershell
-# Clear audit log entries from this session (preserve file, restore from backup if needed)
-$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-& sqlite3 $db "DELETE FROM AuditLogs WHERE datetime(Timestamp) > datetime('now', '-1 day');"
-
-# Or restore from yesterday's backup if full rollback needed
-# Copy-Item "\\backup-server\MyInvois\SQLiteAudit\{date}\audit_{date}.db" "$db" -Force
-
-# Restore previous version (if applicable)
-# Copy previous build to C:\Services\MyInvois-Service\
+# Should appear in the service's Serilog output / Event Log
+Get-EventLog -LogName Application -Source "MyInvois*" -Newest 20 -ErrorAction SilentlyContinue
 ```
-
-### Step 3: Notify Stakeholders
-
-- Contact: Finance Manager, IT Manager, Architecture Team
-- Document: What went wrong, what actions taken, next steps
-
-### Step 4: Post-Incident Review
-
-Schedule within 48 hours to analyze root cause and implement preventive measures.
 
 ---
 
-## Monitoring & Alerting (Phase 1 + Production)
+## Step 10 — Verify the Overnight Batch (Next Morning)
 
-### Certificate Expiry Monitoring (CRITICAL)
-
-Daily automated check for certificate validity:
+After the 02:00 AM scheduled run:
 
 ```powershell
-# File: C:\MyInvois-Service\CertificateExpiryCheck.ps1
-# Scheduled: Daily at 06:00 AM via Task Scheduler
+$db = "E:\data\audit.db"
 
-$certPath = "C:\Certs\MyInvois\myinvois-cert.pfx"
-$password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(...)
-$logFile = "C:\Logs\CertificateMonitoring.log"
+# Summary of overnight batch
+sqlite3 $db @"
+SELECT Status, COUNT(*) AS Count
+FROM SubmissionAuditLog
+WHERE SubmittedAt > datetime('now', '-10 hours')
+GROUP BY Status;
+"@
 
+# Any failures?
+sqlite3 $db @"
+SELECT InvoiceNumber, ErrorCode, ErrorMessage
+FROM SubmissionAuditLog
+WHERE Status = 'Failed'
+  AND SubmittedAt > datetime('now', '-10 hours');
+"@
+```
+
+---
+
+## Triggering a Manual Catch-Up Batch
+
+If the daily batch was missed (service was down), re-run for any date range:
+
+```powershell
+$apiKey = "<ApiKeys:Primary>"
+
+Invoke-RestMethod `
+    -Uri "http://localhost:5000/api/v1/batch/process-range" `
+    -Method POST `
+    -Headers @{ "X-Api-Key" = $apiKey } `
+    -ContentType "application/json" `
+    -Body (@{
+        fromDate = "2026-05-20"
+        toDate   = "2026-05-24"
+    } | ConvertTo-Json)
+```
+
+The service has built-in duplicate detection via the audit log (`IsAlreadySubmittedAsync`) —
+re-running for an already-processed date range will skip already-submitted invoices.
+
+---
+
+## Running the Smoke Test (Developers Only)
+
+The smoke test (`Category=Smoke`) hits the real DB2 and real LHDN pre-prod endpoint.
+It requires user secrets set on the **test project** (secrets ID: `myinvois-service-smoketest`):
+
+```powershell
+cd "c:\Projects\MyInvois-Service"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MovexDb:ConnectionString" "DSN=MOVEX_AS400;UID=<user>;PWD=<password>;"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MyInvoisApi:ClientId" "a777bc19-e8b9-4adb-b793-7c8b64368a5a"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MyInvoisApi:ClientSecret" "<secret>"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "MyInvoisApi:CertificatePassword" "<cert password>"
+
+dotnet user-secrets --project tests/MyInvois.Service.Tests `
+    set "ConnectionStrings:AuditLog" "Data Source=./data/audit.db"
+```
+
+Run the smoke test:
+```powershell
+dotnet test tests/MyInvois.Service.Tests `
+    --filter "Category=Smoke" `
+    --logger "console;verbosity=detailed"
+```
+
+Run all other tests (excludes smoke):
+```powershell
+dotnet test --filter "Category!=Smoke"
+# Expected: Passed! Failed: 0, Passed: 276
+```
+
+---
+
+## Configuration Reference
+
+### Where each setting lives
+
+| Setting | File | Notes |
+|---------|------|-------|
+| Logging, MovexDb defaults, MyInvoisApi defaults, Companies, ForeignPartyDefaults | `appsettings.json` (root) | Committed to source; safe defaults only |
+| Dev overrides (debug log, dev SQLite path, ArMinYear) | `appsettings.Development.json` | Committed; dev only |
+| ApiKeys, BatchScheduler, AllowedHosts | `src/MyInvois.Api/appsettings.json` | Committed; empty ApiKeys (filled by secrets) |
+| All secrets + UAT/prod overrides | `appsettings.UAT.json` / `appsettings.Production.json` | **Never commit** — on server only |
+
+### BatchScheduler settings (in `appsettings.UAT.json`)
+
+| Key | Value | Effect |
+|-----|-------|--------|
+| `Enabled` | `true` | Daily batch runs automatically |
+| `Enabled` | `false` | Daily batch disabled; manual trigger still works |
+| `DailyRunHour` | `2` | Fires at 02:00 server local time |
+| `LookbackDays` | `1` | Processes yesterday's invoices |
+| `LookbackDays` | `7` | Catch-up: processes last 7 days |
+
+### LHDN API endpoints (pre-prod)
+
+Both token and submission use the **same host** — `preprod-api.myinvois.hasil.gov.my`:
+
+| Endpoint | Path |
+|----------|------|
+| OAuth token | `POST /connect/token` |
+| Submit invoice | `POST /api/v1.0/documentsubmissions` |
+| Document status | `GET /api/v1.0/documents/{uuid}/details` |
+
+> `sandbox.myinvois.*` is browser-only (App Proxy). `identity.myinvois.*` does not exist for M2M.
+
+---
+
+## Monitoring & Audit Log
+
+### Daily health check
+
+```powershell
+$db = "E:\data\audit.db"
+
+# Certificate days remaining
 $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-  $certPath,
-  $password
-)
+    "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12", "<password>")
+Write-Host "Cert expires in: $(($cert.NotAfter - (Get-Date)).Days) days"
 
-$expiryDate = $cert.NotAfter
-$daysUntilExpiry = ($expiryDate - (Get-Date)).Days
+# Service running?
+Get-Service -Name "MyInvois-UAT"
 
-Add-Content $logFile "$(Get-Date): Certificate expires in $daysUntilExpiry days"
+# Audit DB accessible + WAL mode
+sqlite3 $db "PRAGMA journal_mode;"           # Expected: wal
+sqlite3 $db "SELECT COUNT(*) FROM SubmissionAuditLog;"
 
-# ALERT THRESHOLDS
-if ($daysUntilExpiry -lt 0) {
-  # CRITICAL: Certificate expired
-  Send-EmailAlert -Subject "CRITICAL: MyInvois Certificate EXPIRED" -Severity "Critical"
-  Stop-Service -Name "MyInvois-Service" -Force
-}
-elseif ($daysUntilExpiry -lt 7) {
-  Send-EmailAlert -Subject "EMERGENCY: Certificate expires in $daysUntilExpiry days" -Severity "Critical"
-}
-elseif ($daysUntilExpiry -lt 14) {
-  Send-EmailAlert -Subject "CRITICAL: Certificate renewal needed" -Severity "High"
-}
-elseif ($daysUntilExpiry -lt 30) {
-  Send-EmailAlert -Subject "WARNING: Certificate renewal due" -Severity "Medium"
-}
-elseif ($daysUntilExpiry -lt 60) {
-  Write-Host "🟡 NOTICE: Certificate expires in $daysUntilExpiry days"
-}
-elseif ($daysUntilExpiry -lt 90) {
-  Write-Host "ℹ️ INFO: Certificate valid for $daysUntilExpiry days"
-}
+# Failures in last 24 hours
+sqlite3 $db @"
+SELECT COUNT(*) AS Failures
+FROM SubmissionAuditLog
+WHERE Status = 'Failed'
+  AND SubmittedAt > datetime('now', '-24 hours');
+"@
 ```
 
-**Alert Recipients:** infrastructure@company.com, secops@company.com, finance@company.com
-
-**Alert Schedule:**
-| Threshold | Action |
-|-----------|--------|
-| 120 days before | Planning reminder to Finance (budget review) |
-| 90 days before | Procurement initiation reminder |
-| 60 days before | Budget approval deadline |
-| 30 days before | Renewal escalation to Finance |
-| 14 days before | ALERT: High priority renewal (Infrastructure lead) |
-| 7 days before | ALERT: CRITICAL - Escalate to executive |
-| 0 days | EMERGENCY - Stop all submissions, activate incident |
-
-### Application Insights (Phase 1: Manual, Phase 2: Automated)
-
-```csharp
-// Add to Program.cs (Phase 2)
-builder.Services.AddApplicationInsightsTelemetry();
-```
-
-### Manual Monitoring (Current)
-
-Check failed submissions hourly via Task Scheduler:
+### Monthly summary
 
 ```powershell
-# Job: Check failed submissions (hourly) — SQLite audit log
-$auditDb = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-$query = "SELECT COUNT(*) FROM AuditLogs WHERE Status = 'Failed' AND datetime(Timestamp) > datetime('now', '-1 hour');"
-$count = & sqlite3 "$auditDb" "$query"
-if ([int]$count -gt 0) {
-    Write-Warning "MyInvois: $count failed submissions in last hour — review audit.db"
-}
+$db = "E:\data\audit.db"
+sqlite3 $db @"
+SELECT strftime('%Y-%m', SubmittedAt) AS Month,
+       COUNT(*) AS Total,
+       SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS Success,
+       SUM(CASE WHEN Status='Failed'  THEN 1 ELSE 0 END) AS Failed,
+       ROUND(SUM(CASE WHEN Status='Success' THEN 1.0 ELSE 0 END) * 100 / COUNT(*), 1) AS SuccessRate
+FROM SubmissionAuditLog
+GROUP BY Month
+ORDER BY Month DESC;
+"@
 ```
 
-### Backup & Disaster Recovery
+---
 
-#### SQLite Audit Log Backup
+## Backup & Disaster Recovery
 
-The audit database is a SQLite file (`audit.db`) at `C:\inetpub\wwwroot\MyInvois\data\audit.db`. In line with the organisation's data retention and backup policy, this file must be included in the server's daily backup to satisfy the 7-year audit retention compliance requirement (ISO 27001, LHDN).
+### SQLite audit log — daily backup
 
-**Files to back up:**
-- `audit.db` — primary database
-- `audit.db-wal` — WAL journal file (must be included or data loss may occur)
-- `audit.db-shm` — shared memory file (optional but recommended)
+The `audit.db` file (plus WAL journal) must be included in the server's daily backup to
+satisfy the 7-year LHDN/ISO 27001 retention requirement.
 
 ```powershell
-# SQLite Audit Log Backup — Daily at 22:30 (run after application window)
+# Schedule: daily at 22:30 via Task Scheduler
 $auditDbDir = "C:\inetpub\wwwroot\MyInvois\data"
 $backupDest = "\\backup-server\MyInvois\SQLiteAudit"
 $dateSuffix = Get-Date -Format 'yyMMdd'
 
-New-Item -ItemType Directory -Force -Path "$backupDest\$dateSuffix" | Out-Null
+New-Item -ItemType Directory -Force "$backupDest\$dateSuffix" | Out-Null
 
-# Use SQLite online backup to ensure a consistent snapshot even if writes are in progress.
-# NOTE: Ensure sqlite3.exe is installed at the configured path and included in operational runbooks.
-$sqliteExe = "C:\Program Files\SQLite\sqlite3.exe"
+# SQLite online backup (safe even while app is writing)
+sqlite3 "$auditDbDir\audit.db" ".backup '$backupDest\$dateSuffix\audit_$dateSuffix.db'"
 
-& $sqliteExe "$auditDbDir\audit.db" ".backup '$backupDest\$dateSuffix\audit_$dateSuffix.db'"
-
-Write-Host "SQLite audit backup complete: $backupDest\$dateSuffix"
+Write-Host "Backup complete: $backupDest\$dateSuffix\audit_$dateSuffix.db"
 ```
 
-**Compliance requirements (ADR-030):**
-- [ ] `audit.db` stored on a server path included in the host server's backup policy
-- [ ] 7-year retention minimum (ISO 27001 + LHDN audit requirement)
-- [ ] Backup location is physically separate from application server
-- [ ] WAL journal file (`audit.db-wal`) included in every backup
-- [ ] Backup verified monthly by restoring to a test path and querying row count
+Files to include in every backup:
+- `audit.db` — primary database
+- `audit.db-wal` — WAL journal (data loss risk if omitted)
+- `audit.db-shm` — shared memory (recommended)
 
-#### Certificate Backup (Encrypted)
+### Certificate backup (encrypted, quarterly)
 
 ```powershell
-# Create encrypted backup (quarterly or after certificate renewal)
-$source = "C:\Certs\MyInvois\myinvois-cert.pfx"
-$backup = "\\backup-server\Certificates\MyInvois\myinvois-cert.BACKUP.7z"
-$archivePassword = "BackupPassword"  # Different from certificate password
+$source   = "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12"
+$backup   = "\\backup-server\Certificates\MyInvois\myinvois-cert.BACKUP.7z"
+$archPass = "<backup archive password — different from cert password>"
 
-# Encrypt with 7-Zip AES-256
-7z a -tzip -mem=AES256 -p$archivePassword "$backup" "$source"
-
-# Verify
-7z l "$backup"
+7z a -tzip -mem=AES256 -p$archPass "$backup" "$source"
+7z l "$backup"   # Verify
 ```
 
-**Backup Location Requirements:**
-- [ ] Physically separate location (different building/server)
-- [ ] Encrypted with AES-256 or stronger
-- [ ] Different password than certificate itself
-- [ ] Limited access (2-3 authorized people only)
-- [ ] Off-site copy (geographic disaster recovery)
-- [ ] Documented in Disaster Recovery Plan
+---
 
-#### Disaster Recovery Test
+## Rollback Procedure
 
-**Schedule:** Every 6 months (August 1 & February 1)
+### Stop the service
 
 ```powershell
-# Step 1: Extract backup to temporary location
-7z x "\\backup-server\Certificates\MyInvois\myinvois-cert.BACKUP.7z" `
-  -o"C:\Temp\CertRecoveryTest\" `
-  -p$archivePassword
-
-# Step 2: Verify certificate loads
-$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-  "C:\Temp\CertRecoveryTest\myinvois-cert.pfx",
-  "CertificatePassword"
-)
-Write-Host "✓ Certificate restored successfully"
-Write-Host "  Expires: $($cert.NotAfter)"
-
-# Step 3: Test signature generation
-$signature = [System.Convert]::ToBase64String(
-  $cert.PrivateKey.SignData(
-    [System.Text.Encoding]::UTF8.GetBytes("test"),
-    "SHA256"
-  )
-)
-Write-Host "✓ Signature generated from restored certificate"
-
-# Step 4: Cleanup
-Remove-Item "C:\Temp\CertRecoveryTest\" -Recurse -Force
-
-# Step 5: Document results
-Add-Content "C:\Logs\DR_Test_Log.txt" "$(Get-Date): DR test passed, restored certificate functional"
+Stop-Service -Name "MyInvois-UAT" -Force
 ```
 
----
-
-## Operational Support
-
-### On-Call Escalation
-
-| Time | Contact | Role |
-|------|---------|------|
-| 9-17 (Weekday) | Dev Team | Troubleshoot service code |
-| 17-22 (Weekday) | IT Ops | Server/database issues |
-| 22-9 (Off-hours) | On-Call (rotating) | Incident response |
-
-### Common Commands
+### Restore previous build
 
 ```powershell
-# Check service status
-Get-Service -Name "MyInvois-Service"
+# Copy previous publish artifact back to the server
+Copy-Item "\\backup-server\MyInvois\builds\previous\*" `
+    "C:\inetpub\wwwroot\MyInvois\" -Force
+```
 
-# View recent logs (file-based)
-Get-Content C:\Logs\MyInvois-Service\*.log -Tail 50
+### Restore audit DB (if corrupted)
 
-# Manually trigger batch (testing)
-C:\Services\MyInvois-Service\MyInvois.Service.exe --process-batch --test
+```powershell
+$db     = "E:\data\audit.db"
+$backup = "\\backup-server\MyInvois\SQLiteAudit\{yyMMdd}\audit_{yyMMdd}.db"
 
-# Query audit log (SQLite)
-$db = "C:\inetpub\wwwroot\MyInvois\data\audit.db"
-& sqlite3 $db "SELECT InvoiceNumber, Status, ErrorMessage FROM AuditLogs WHERE Status='Failed' ORDER BY Timestamp DESC LIMIT 20;"
+Stop-Service "MyInvois-UAT"
+Copy-Item $backup $db -Force
+Start-Service "MyInvois-UAT"
 ```
 
 ---
 
-## Documentation & Runbooks
+## Go-Live Checklist (Production — After UAT Sign-Off)
 
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common issues and fixes
-- [03-myinvois-requirements.md](../ai/memory/03-myinvois-requirements.md) — Validation rules & traceability
-- SQLite audit log query examples — see "Query audit log (SQLite)" in the Operational Verification section above
+These items are **not yet completed** — UAT is the current phase.
 
----
-
-## Post-Go-Live (Week of Apr 7)
-
-### Phase 2 Planning
-
-- Implement Portal UI dashboard
-- Add automatic retry with circuit breaker
-- Deploy to production from staging
-
-### Performance Review
-
-- Analyze submission success rates
-- Identify bottlenecks
-- Plan optimizations
+- [ ] Production digital certificate received from Finance (not trial cert)
+- [ ] Production cert tested in pre-prod before switching
+- [ ] `appsettings.Production.json` prepared with production LHDN endpoint (`api.myinvois.hasil.gov.my`)
+- [ ] `ASPNETCORE_ENVIRONMENT=Production` set on production server
+- [ ] `BatchScheduler:LookbackDays` confirmed with Finance (how far back to submit)
+- [ ] SQL Server audit mirror evaluated (if single-instance SQLite becomes a concern)
+- [ ] Finance sign-off on UAT results (success rate ≥ 95%)
+- [ ] Submission window agreed with Finance (avoid month-end close conflict)
 
 ---
 
-**Deployment Owner:** IT Ops
-**Review Date:** March 16, 2026 (Updated — SQLite backup added, monitoring script updated per ADR-030)
-**Next Update:** Post-MVAI lessons learned (after Mar 31 go-live)
+## Related Documents
+
+- [SETUP.md](SETUP.md) — Local developer setup
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — Common issue diagnosis
+- [SETUP_USER_SECRETS.md](SETUP_USER_SECRETS.md) — Smoke test secrets setup
+- [ai/memory/01-system-architecture.md](../ai/memory/01-system-architecture.md) — Architecture reference
+- [ai/evidence/decision-log.md](../ai/evidence/decision-log.md) — ADR history
 
 ---
 
-**Questions?** Contact the DevOps Team or Development Manager.
+**Deployment Owner:** Hector Salazar (Development & Integration Lead)
+**Last Updated:** 2026-05-25
+**Next Review:** After UAT sign-off / production go-live

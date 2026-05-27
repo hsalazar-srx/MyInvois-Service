@@ -60,8 +60,8 @@ public class TINValidatorTests
     [Fact]
     public void ValidateFormat_WithValidTIN_ReturnsTrue()
     {
-        // Arrange
-        var tin = "123456789012";
+        // Arrange — standard LHDN TIN: 1 letter + 11 digits (12 chars total)
+        var tin = "C20921865070";
 
         // Act
         var isValid = _sut.ValidateFormat(tin, out var error);
@@ -72,16 +72,18 @@ public class TINValidatorTests
     }
 
     [Theory]
-    [InlineData("000000000000")]
-    [InlineData("999999999999")]
-    [InlineData("123456789012")]
-    public void ValidateFormat_WithValid12DigitTIN_ReturnsTrue(string tin)
+    [InlineData("C20921865070")] // Company TIN (1 letter + 11 digits)
+    [InlineData("D12345678901")] // Individual TIN (1 letter + 11 digits)
+    [InlineData("EI00000000030")] // Foreign supplier exemption TIN (2 letters + 11 digits)
+    [InlineData("EI00000000010")] // Foreign buyer exemption TIN (2 letters + 11 digits)
+    [InlineData("IG11953977020")] // Government/individual TIN (2 letters + 11 digits)
+    public void ValidateFormat_WithValidLhdnFormatTIN_ReturnsTrue(string tin)
     {
         // Act
         var isValid = _sut.ValidateFormat(tin, out var error);
 
         // Assert
-        isValid.Should().BeTrue();
+        isValid.Should().BeTrue($"'{tin}' is a valid LHDN TIN format");
         error.Should().BeNull();
     }
 
@@ -168,9 +170,8 @@ public class TINValidatorTests
     #region ValidateFormat Tests - Invalid Length
 
     [Theory]
-    [InlineData("12345")]
-    [InlineData("1234567890")]
-    [InlineData("12345678901")]
+    [InlineData("C1234")]       // too short
+    [InlineData("C1234567890")] // 11 chars, too short
     public void ValidateFormat_TINTooShort_ReturnsFalse(string tin)
     {
         // Act
@@ -180,12 +181,13 @@ public class TINValidatorTests
         isValid.Should().BeFalse();
         error.Should().NotBeNull();
         error!.FieldName.Should().Be("TIN");
-        error.Message.Should().Contain("12 digits");
+        error.Message.Should().NotBeNullOrWhiteSpace();
     }
 
     [Theory]
-    [InlineData("1234567890123")]
-    [InlineData("12345678901234567890")]
+    [InlineData("C123456789012")]   // 13 chars, 1-letter prefix (must be 12 for standard)
+    [InlineData("EI000000000300")]  // 14 chars — too long for any format
+    [InlineData("12345678901234567890")] // way too long
     public void ValidateFormat_TINTooLong_ReturnsFalse(string tin)
     {
         // Act
@@ -195,7 +197,7 @@ public class TINValidatorTests
         isValid.Should().BeFalse();
         error.Should().NotBeNull();
         error!.FieldName.Should().Be("TIN");
-        error.Message.Should().Contain("12 digits");
+        error.Message.Should().NotBeNullOrWhiteSpace();
     }
 
     #endregion
@@ -203,20 +205,20 @@ public class TINValidatorTests
     #region ValidateFormat Tests - Non-Numeric
 
     [Theory]
-    [InlineData("12345678901A")]
-    [InlineData("A23456789012")]
-    [InlineData("1234567890AB")]
-    [InlineData("12345678-012")]
-    public void ValidateFormat_NonNumericTIN_ReturnsFalse(string tin)
+    [InlineData("C1234567890A")]    // letter at end instead of digit
+    [InlineData("C12345678-01")]    // hyphen in number part
+    [InlineData("1234567890AB")]    // no letter prefix, letters at end
+    [InlineData("C123456789AB")]    // digit run broken by letters
+    public void ValidateFormat_InvalidFormatTIN_ReturnsFalse(string tin)
     {
         // Act
-        var isValid = _sut.ValidateFormat(tin,  out var error);
+        var isValid = _sut.ValidateFormat(tin, out var error);
 
         // Assert
-        isValid.Should().BeFalse();
+        isValid.Should().BeFalse($"'{tin}' is not a valid LHDN TIN format");
         error.Should().NotBeNull();
         error!.FieldName.Should().Be("TIN");
-        error.Message.Should().Contain("numeric");
+        error.Message.Should().NotBeNullOrWhiteSpace();
     }
 
     #endregion

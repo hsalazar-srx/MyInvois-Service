@@ -77,14 +77,13 @@ Error: Certificate_InValid_For_Usage
 ```
 
 **Diagnosis:**
-```sql
--- Check if certificate expiry alert was triggered
-SELECT TOP 10 * FROM [dbo].[AuditLog]
-WHERE [Action] LIKE '%Certificate%Expired%'
-ORDER BY [Timestamp] DESC;
+```powershell
+# Check if certificate expiry alert was triggered
+$db = "E:\data\audit.db"
+& sqlite3 $db "SELECT AuditId, Action, Timestamp FROM AuditLogs WHERE Action LIKE '%Certificate%Expired%' ORDER BY Timestamp DESC LIMIT 10;"
 
--- Check monitoring logs
-Get-Content "C:\Logs\CertificateMonitoring.log" | Tail -5
+# Check monitoring logs
+Get-Content "C:\Logs\CertificateMonitoring.log" -Tail 5
 ```
 
 **Solutions:**
@@ -218,9 +217,11 @@ Error: Connection refused or service crashes on startup
    Get-Content .\appsettings.Production.json | ConvertFrom-Json
    ```
 
-2. **Check SQL Server connection:**
+2. **Check SQLite audit log is accessible:**
    ```powershell
-   sqlcmd -S YOUR_SQL_SERVER -d SRX_AuditLog -Q "SELECT 1;"
+   $db = "E:\data\audit.db"
+   Test-Path $db
+   & sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;"
    ```
 
 3. **Check certificate configuration (production):**
@@ -247,9 +248,9 @@ Error: Connection refused or service crashes on startup
 
 | Issue | Fix |
 |-------|-----|
-| "Connection timeout" | Verify SQL Server is running; check firewall rules |
-| "Login failed" | Verify Integrated Security enabled; check service account |
-| "Database does not exist" | Run `create-audit-table.sql` first |
+| `audit.db` not found | Check `./data/` directory exists and service account has write access; run service once to create |
+| `audit.db` locked | Another process holds the file; check for hung service instances |
+| "Database disk image is malformed" | Run `PRAGMA integrity_check;` — restore from backup if corrupt |
 | "Certificate file not found" | Verify cert copied to `C:\Certs\MyInvois\`, check path in appsettings.json |
 | "Certificate password incorrect" | Verify password in Credential Manager, update via `cmdkey /add:MyInvoisCert` |
 | "Cannot load certificate" | Verify certificate file not corrupted, restore from backup |
@@ -279,7 +280,7 @@ dotnet list package | Select-String "IBM.Data.Db2"
 1. Verify AS400 server hostname and port in `MovexDb:ConnectionString`
 2. Check network connectivity (ping, tracert to AS400)
 3. Verify firewall allows DB2 ports (446 or 8471)
-4. Confirm IBM DB2 driver (`Net.IBM.Data.Db2`) is installed
+4. Confirm IBM DB2 iSeries Access ODBC driver is installed (check ODBC Data Sources in Windows)
 
 ---
 
@@ -356,30 +357,20 @@ Too many requests (100 per minute limit)
 ```
 
 **Diagnosis:**
-```sql
--- Check submission rate
-SELECT 
-    DATEPART(MINUTE, [Timestamp]) AS [Minute],
-    COUNT(*) AS [SubmissionCount]
-FROM [dbo].[AuditLog]
-WHERE [Category] = 'MyInvois'
-  AND [Timestamp] > DATEADD(MINUTE, -5, GETUTCDATE())
-GROUP BY DATEPART(MINUTE, [Timestamp])
-ORDER BY [Minute] DESC;
+```powershell
+$db = "E:\data\audit.db"
+# Check submission rate per minute (last 5 minutes)
+& sqlite3 $db "SELECT strftime('%H:%M', Timestamp) AS Minute, COUNT(*) AS SubmissionCount FROM AuditLogs WHERE Category='MyInvois' AND datetime(Timestamp) > datetime('now', '-5 minutes') GROUP BY Minute ORDER BY Minute DESC;"
 ```
 
 **Solutions:**
-1. Increase delay between batches in `appsettings.json`:
-   ```json
-   "BatchProcessing": {
-     "DelayBetweenBatchesMs": 1000  // Increase from 600
-   }
-   ```
-2. Reduce batch size:
-   ```json
-   "PurchaseBatchSize": 25  // Reduce from 50
-   ```
-3. Spread submission over longer period
+1. The Polly retry policy in `MyInvoiceSubmitter` automatically handles 429 responses
+   with exponential backoff (3 attempts: 5s, 10s, 20s) — no config change needed
+   for transient rate-limit hits.
+2. If sustained rate limiting occurs, reduce the batch date range via the
+   `POST /api/v1/batch/process-range` endpoint to spread submissions across multiple runs.
+3. Check submission volume: LHDN limits are 300 req/min (submission), 600 req/min (status).
+   At ~100 AR + 500-1000 AP/month the service operates well within these limits.
 
 ---
 
@@ -390,24 +381,19 @@ Invoice already submitted successfully
 ```
 
 **Diagnosis:**
-```sql
--- Query duplicate submissions
-SELECT [InvoiceNumber], COUNT(*) AS [SubmissionCount]
-FROM [dbo].[AuditLog]
-WHERE [Category] = 'MyInvois'
-  AND [Status] = 'Success'
-GROUP BY [InvoiceNumber]
-HAVING COUNT(*) > 1;
+```powershell
+$db = "E:\data\audit.db"
+# Query duplicate submissions
+& sqlite3 $db "SELECT InvoiceNumber, COUNT(*) AS SubmissionCount FROM AuditLogs WHERE Category='MyInvois' AND Status='Success' GROUP BY InvoiceNumber HAVING COUNT(*) > 1;"
 ```
 
 **Solutions:**
-1. **Expected**: MyInvois API correctly prevents duplicates
-2. Add invoice to skip list:
-   ```sql
-   INSERT INTO [dbo].[AuditLog] ([Action], [Status], [InvoiceNumber], ...)
-   VALUES ('MyInvois_Skip', 'Success', 'INV-2026-00001', ...);
-   ```
-3. Manual review required before retry
+1. **Expected**: MyInvois API correctly rejects true duplicates (DS302)
+2. The service has built-in duplicate detection via audit log check before submission  
+   - This replaces the legacy SQL-based “skip list” mechanism; no manual SQL `INSERT` is required.
+3. After manual review, if the original submission was valid, treat the invoice as **skipped** by not requeuing or retrying it  
+   - Any subsequent attempt with the same `InvoiceNumber` will be rejected with DS302 by design.
+4. Only retry after correcting the invoice (e.g., new invoice number or corrected data), and document the action in your incident/ticket.
 
 ---
 
@@ -420,14 +406,10 @@ Supplier TIN, Invoice Date, or other required field not found
 ```
 
 **Diagnosis:**
-```sql
--- Find invoices with validation errors
-SELECT [InvoiceNumber], [ValidationErrors], [Timestamp]
-FROM [dbo].[AuditLog]
-WHERE [Status] = 'Failed'
-  AND [ValidationErrors] IS NOT NULL
-ORDER BY [Timestamp] DESC
-LIMIT 10;
+```powershell
+$db = "E:\data\audit.db"
+# Find invoices with validation errors
+& sqlite3 $db "SELECT InvoiceNumber, ValidationErrors, Timestamp FROM AuditLogs WHERE Status='Failed' AND ValidationErrors IS NOT NULL ORDER BY Timestamp DESC LIMIT 10;"
 ```
 
 **Solutions:**
@@ -447,12 +429,10 @@ TIN does not match Malaysian format (12 alphanumeric)
 ```
 
 **Diagnosis:**
-```sql
--- Find invalid TINs
-SELECT DISTINCT [SupplierTIN], [BuyerTIN]
-FROM [dbo].[AuditLog]
-WHERE [ValidationErrors] LIKE '%TIN%'
-  AND [Timestamp] > DATEADD(DAY, -7, GETUTCDATE());
+```powershell
+$db = "E:\data\audit.db"
+# Find invalid TINs from recent entries
+& sqlite3 $db "SELECT DISTINCT InvoiceNumber, ValidationErrors, Timestamp FROM AuditLogs WHERE ValidationErrors LIKE '%TIN%' AND datetime(Timestamp) > datetime('now', '-7 days');"
 ```
 
 **Solutions:**
@@ -469,13 +449,10 @@ Non-MYR currency without exchange rate
 ```
 
 **Diagnosis:**
-```sql
--- Find missing exchange rates
-SELECT [InvoiceNumber], [CurrencyCode], [ExchangeRate]
-FROM [dbo].[AuditLog]
-WHERE [CurrencyCode] != 'MYR'
-  AND ([ExchangeRate] IS NULL OR [ExchangeRate] = 1.0)
-  AND [Timestamp] > DATEADD(DAY, -7, GETUTCDATE());
+```powershell
+$db = "E:\data\audit.db"
+# Find missing exchange rates
+& sqlite3 $db "SELECT InvoiceNumber, CurrencyCode, ExchangeRate, Timestamp FROM AuditLogs WHERE CurrencyCode != 'MYR' AND (ExchangeRate IS NULL OR ExchangeRate = 1.0) AND datetime(Timestamp) > datetime('now', '-7 days');"
 ```
 
 **Solutions:**
@@ -490,58 +467,61 @@ WHERE [CurrencyCode] != 'MYR'
 
 ## Database Issues
 
-### "Cannot connect to SQL Server"
+### "Cannot open SQLite audit database"
 
 ```
-Connection timeout or login failed
+SQLite Error: unable to open database file
+OR: Microsoft.Data.Sqlite.SqliteException: unable to open database file
 ```
 
 **Diagnosis:**
 ```powershell
-# Test SQL Server port
-Test-NetConnection YOUR_SQL_SERVER -Port 1433
+$db = "E:\data\audit.db"
 
-# Test connection string
-sqlcmd -S YOUR_SQL_SERVER -U sa -P password -Q "SELECT @@VERSION;"
+# Check file exists
+Test-Path $db
+
+# Check directory write permissions for app pool identity
+icacls (Split-Path $db) | Select-String "MyInvoisApi"
+
+# Try opening manually
+& sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;"
 ```
 
 **Solutions:**
-1. Verify SQL Server is running:
+1. Create `data\` directory and grant write access to the app pool identity:
    ```powershell
-   Get-Service -Name "MSSQL*" | Start-Service
+   New-Item -ItemType Directory -Force "C:\inetpub\apps\MyInvois.Api\data"
+   icacls "C:\inetpub\apps\MyInvois.Api\data" /grant "IIS AppPool\MyInvoisApi:(OI)(CI)F"
    ```
-2. Check firewall (port 1433):
-   ```powershell
-   Get-NetFirewallRule -DisplayName "*SQL*"
-   ```
-3. Verify connection string in `appsettings.json`
+2. Restart the application — EF Core will recreate `audit.db` on startup
+3. Verify connection string in `appsettings.Production.json` uses `Data Source=` format
 
 ---
 
-### "Audit Log Table Corrupt"
+### "Audit Log Database Corrupt"
 
 ```
-Error reading/writing to [dbo].[AuditLog]
+SQLite Error: database disk image is malformed
+OR: Microsoft.Data.Sqlite.SqliteException: database disk image is malformed
 ```
 
 **Diagnosis:**
-```sql
--- Check table integrity
-DBCC CHECKTABLE ([dbo].[AuditLog]);
+```powershell
+$db = "E:\data\audit.db"
+& sqlite3 $db "PRAGMA integrity_check;"  # Expected: ok
 ```
 
 **Solutions:**
-1. **Repair database:**
-   ```sql
-   ALTER DATABASE SRX_AuditLog SET SINGLE_USER;
-   DBCC CHECKDB (SRX_AuditLog, REPAIR_REBUILD);
-   ALTER DATABASE SRX_AuditLog SET MULTI_USER;
+1. **Restore from backup:**
+   ```powershell
+   $backup = "\\backup-server\MyInvois\SQLiteAudit\{yyMMdd}\audit_{yyMMdd}.db"
+   Stop-WebAppPool "MyInvoisApi"
+   Copy-Item $backup $db -Force
+   Start-WebAppPool "MyInvoisApi"
    ```
-2. **Restore from backup:**
-   ```sql
-   RESTORE DATABASE SRX_AuditLog FROM DISK = 'C:\Backups\SRX_AuditLog.bak';
-   ```
-3. **Escalate to DBA team**
+2. **If no backup available:** Delete `audit.db` — EF Core will recreate an empty database on next startup. Historical audit entries will be lost; escalate to IT Manager for compliance assessment.
+3. **Escalate to IT Manager** if 7-year retention compliance is at risk
 
 ---
 
@@ -549,42 +529,30 @@ DBCC CHECKTABLE ([dbo].[AuditLog]);
 
 ### View Failed Submissions
 
-```sql
--- Query failed submissions (most recent first)
-SELECT 
-    [AuditId],
-    [InvoiceNumber],
-    [ErrorMessage],
-    [ErrorCode],
-    [RetryCount],
-    [Timestamp]
-FROM [dbo].vw_MyInvois_FailedSubmissions
-ORDER BY [Timestamp] DESC
-LIMIT 20;
+```powershell
+$db = "E:\data\audit.db"
 
--- Or use view
-SELECT * FROM [dbo].vw_MyInvois_FailedSubmissions
-WHERE [HoursSinceFailed] < 24;
+# Query failed submissions (most recent first)
+& sqlite3 $db "SELECT AuditId, InvoiceNumber, ErrorMessage, StatusCode, RetryCount, Timestamp FROM AuditLogs WHERE Status='Failed' ORDER BY Timestamp DESC LIMIT 20;"
+
+# Failed in last 24 hours
+& sqlite3 $db "SELECT AuditId, InvoiceNumber, ErrorMessage, Timestamp FROM AuditLogs WHERE Status='Failed' AND datetime(Timestamp) > datetime('now', '-24 hours') ORDER BY Timestamp DESC;"
 ```
 
 ### Retry Failed Invoice
 
 **Manual retry via audit log:**
 
-```sql
--- Step 1: Identify failed submission
-SELECT [AuditId], [InvoiceNumber], [ErrorMessage]
-FROM [dbo].[AuditLog]
-WHERE [Status] = 'Failed'
-  AND [InvoiceNumber] = 'INV-2026-00001';
+```powershell
+$db = "E:\data\audit.db"
 
--- Step 2: Update retry count
-UPDATE [dbo].[AuditLog]
-SET [RetryCount] = [RetryCount] + 1,
-    [Status] = 'Pending'
-WHERE [AuditId] = 'YOUR_AUDIT_ID';
+# Step 1: Identify failed submission
+& sqlite3 $db "SELECT AuditId, InvoiceNumber, ErrorMessage FROM AuditLogs WHERE Status='Failed' AND InvoiceNumber='INV-2026-00001';"
 
--- Step 3: Service reprocesses on next batch
+# Step 2: Reset to Pending so service reprocesses on next batch
+& sqlite3 $db "UPDATE AuditLogs SET RetryCount = RetryCount + 1, Status = 'Pending' WHERE AuditId = 'YOUR_AUDIT_ID';"
+
+# Step 3: Service reprocesses on next batch run
 ```
 
 **Automated retry (Phase 2):**
@@ -700,12 +668,9 @@ Get-DistributionGroup -Identity "infrastructure@company.com"
 
 ```powershell
 # Run this every morning
-./scripts/daily-health-check.ps1
 
-# Or manually:
-sqlcmd -S YOUR_SQL_SERVER -d SRX_AuditLog -i .\scripts\health-check.sql
+$db = "E:\data\audit.db"
 
-# Specific checks:
 # 1. Certificate still valid
 $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
   "C:\Certs\MyInvois\myinvois-cert.pfx",
@@ -714,19 +679,22 @@ $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate
 Write-Host "Days until expiry: $(($cert.NotAfter - (Get-Date)).Days)"
 
 # 2. Service running
-Get-Service -Name "MyInvois-Service"
+Get-Service -Name "MyInvois-Service" -ErrorAction SilentlyContinue
 
-# 3. Audit log accessible
-sqlcmd -S YOUR_SQL_SERVER -d SRX_AuditLog -Q "SELECT COUNT(*) FROM [dbo].[AuditLog];"
+# 3. Audit log accessible and WAL mode active
+& sqlite3 $db "PRAGMA journal_mode;"          # Expected: wal
+& sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;"
+
+# 4. Recent failures (last 24 hours)
+& sqlite3 $db "SELECT COUNT(*) FROM AuditLogs WHERE Status='Failed' AND datetime(Timestamp) > datetime('now', '-24 hours');"
 ```
 
 ### Monthly Metrics
 
-```sql
--- Monthly summary
-SELECT [Year], [Month], [InvoiceType], [TotalInvoices], [SuccessCount], [FailedCount], [SuccessRate]
-FROM [dbo].vw_MyInvois_MonthlySummary
-ORDER BY [Year] DESC, [Month] DESC;
+```powershell
+$db = "E:\data\audit.db"
+# Monthly summary
+& sqlite3 $db "SELECT strftime('%Y-%m', Timestamp) AS Month, COUNT(*) AS TotalInvoices, SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS SuccessCount, SUM(CASE WHEN Status='Failed' THEN 1 ELSE 0 END) AS FailedCount, ROUND(SUM(CASE WHEN Status='Success' THEN 1.0 ELSE 0 END) * 100 / COUNT(*), 1) AS SuccessRate FROM AuditLogs WHERE Action='MyInvois_Submit' GROUP BY Month ORDER BY Month DESC;"
 ```
 
 ---
@@ -736,7 +704,7 @@ ORDER BY [Year] DESC, [Month] DESC;
 ### Escalation Path
 
 1. **Check this guide** (Troubleshooting.md)
-2. **Query audit logs** (see SQL examples above)
+2. **Query audit logs** (see SQLite examples above using `sqlite3`)
 3. **Check MyInvois status** (https://myinvois.hasil.gov.my/status)
 4. **Contact IT Ops** (if database/infrastructure issue)
 5. **Contact Dev Team** (if code issue)
@@ -758,8 +726,8 @@ ORDER BY [Year] DESC, [Month] DESC;
 
 ---
 
-**Last Updated:** February 16, 2026
-**Owned By:** Operations Team  
+**Last Updated:** 2026-05-25
+**Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 
 ---

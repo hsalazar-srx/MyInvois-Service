@@ -170,6 +170,29 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             _logger.LogWarning("Invoice {InvoiceNumber} has no line items", raw.InvoiceNo);
         }
 
+        // Recalculate header totals from line items for both AP and AR.
+        //
+        // AP: fpledg.epvtam (GstAmount) is often 0 even when GST exists — the
+        //     actual tax is in FGINAE (summed via LATERAL join into line TaxAmounts).
+        //
+        // AR: FSLEDG.ESCUAM is the full invoice amount across all deliveries.
+        //     ODLINE lines (fetched via OINVOH.UHVONO) cover one voucher/delivery,
+        //     so the header total must be recalculated from the lines actually fetched.
+        //
+        // LineTotal can be negative (credit notes/debit notes) — use ABS to normalize.
+        if (invoice.Lines.Count > 0)
+        {
+            var lineExcl = invoice.Lines.Sum(l => Math.Abs(l.LineTotal));
+            var lineTax = invoice.Lines.Sum(l => l.TaxAmount);
+            invoice.TotalExclTax = lineExcl;
+            invoice.TotalTax = lineTax;
+            invoice.TotalInclTax = lineExcl + lineTax;
+
+            // Normalize individual line totals to positive
+            foreach (var line in invoice.Lines)
+                line.LineTotal = Math.Abs(line.LineTotal);
+        }
+
         return invoice;
     }
 
