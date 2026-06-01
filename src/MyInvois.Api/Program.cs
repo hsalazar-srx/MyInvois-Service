@@ -11,6 +11,11 @@ using Serilog.Context;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Load user secrets in all environments — required for secrets containing special characters
+// (e.g. { } in CertificatePassword) that ASP.NET Core config token substitution corrupts
+// when delivered via appsettings.json or web.config environment variables.
+builder.Configuration.AddUserSecrets<Program>(optional: true);
+
 // Localhost-only binding — this API is an internal service, not exposed externally.
 // Production: IIS site with localhost binding on port 5051.
 builder.WebHost.UseUrls("http://localhost:5051");
