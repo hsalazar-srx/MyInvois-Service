@@ -40,6 +40,11 @@ builder.Services.AddAuditLogging(builder.Configuration);
 // MyInvois API settings — credentials and endpoint from user-secrets / appsettings.
 builder.Services.Configure<MyInvoisApiSettings>(builder.Configuration.GetSection("MyInvoisApi"));
 
+// Company registry — TIN, BRN, Name, Address per CONO (100=prod, 300=dev).
+// Bind the "Companies" JSON object directly into CompanySettings.Companies dictionary.
+builder.Services.Configure<CompanySettings>(cs =>
+    builder.Configuration.GetSection("Companies").Bind(cs.Companies));
+
 // Named HttpClient used by MyInvoiceSubmitter for all LHDN API calls.
 builder.Services.AddHttpClient("MyInvois");
 
