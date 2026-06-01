@@ -23,15 +23,18 @@ using MyInvois.Service.Configuration;
 public class MovexMasterPartyDataProvider : IPartyDataProvider
 {
     private readonly MovexDbSettings _settings;
+    private readonly ForeignPartyDefaultsSettings _foreignDefaults;
     private readonly ILogger<MovexMasterPartyDataProvider> _logger;
     private readonly Dictionary<string, string> _companySchemas;
 
     public MovexMasterPartyDataProvider(
         IOptions<MovexDbSettings> settings,
+        IOptions<ForeignPartyDefaultsSettings> foreignDefaults,
         ILogger<MovexMasterPartyDataProvider> logger)
     {
-        _settings = settings?.Value ?? throw new ArgumentNullException(nameof(settings));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _settings        = settings?.Value        ?? throw new ArgumentNullException(nameof(settings));
+        _foreignDefaults = foreignDefaults?.Value ?? throw new ArgumentNullException(nameof(foreignDefaults));
+        _logger          = logger                 ?? throw new ArgumentNullException(nameof(logger));
 
         _companySchemas = new Dictionary<string, string>
         {
@@ -146,13 +149,16 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
         // IDSUNM (name), IDCSCD (country), IDVRNO (VAT/BRN), IDCORG/IDCOR2 (org numbers)
         // NOTE: IDADR1-3 and IDPONO do NOT exist in this M3 installation.
         // Address fields are not available in CIDMAS — supplier address sourced elsewhere if needed.
+        //
+        // Supplier TIN: foreign import suppliers have no Malaysian TIN — default to EI00000000030.
         var tinSelect = string.IsNullOrWhiteSpace(_settings.SupplierTinColumn)
-            ? "CAST(NULL AS VARCHAR(20)) AS TIN"
-            : $"TRIM(s.{_settings.SupplierTinColumn}) AS TIN";
+            ? $"'{_foreignDefaults.SupplierTIN}' AS TIN"
+            : $"COALESCE(NULLIF(TRIM(s.{_settings.SupplierTinColumn}),''), '{_foreignDefaults.SupplierTIN}') AS TIN";
 
+        // Supplier BRN: use IDVRNO (VAT reg no) if no column configured; fall back to 'NA'.
         var brnSelect = string.IsNullOrWhiteSpace(_settings.SupplierBrnColumn)
-            ? "TRIM(s.IDVRNO) AS BRN"  // Default: use VAT registration number as BRN
-            : $"TRIM(s.{_settings.SupplierBrnColumn}) AS BRN";
+            ? $"COALESCE(NULLIF(TRIM(s.IDVRNO),''), '{_foreignDefaults.SupplierBRN}') AS BRN"
+            : $"COALESCE(NULLIF(TRIM(s.{_settings.SupplierBrnColumn}),''), '{_foreignDefaults.SupplierBRN}') AS BRN";
 
         return $@"SELECT
             TRIM(s.IDSUNM) AS Name,
@@ -170,14 +176,17 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
     private string BuildCustomerSql(string schema)
     {
         // Standard OCUSMA columns: OKCUNO (ID), OKCUNM (name), OKCUA1-4 (address)
-        // TIN/BRN columns are configurable — pending Finance team confirmation
+        //
+        // Customer TIN: AU/overseas customers have no Malaysian TIN — default to EI00000000020.
         var tinSelect = string.IsNullOrWhiteSpace(_settings.CustomerTinColumn)
-            ? "CAST(NULL AS VARCHAR(20)) AS TIN"
-            : $"TRIM(c.{_settings.CustomerTinColumn}) AS TIN";
+            ? $"'{_foreignDefaults.BuyerTIN}' AS TIN"
+            : $"COALESCE(NULLIF(TRIM(c.{_settings.CustomerTinColumn}),''), '{_foreignDefaults.BuyerTIN}') AS TIN";
 
+        // Customer BRN: OKVRNO holds ABN (AU), VAT reg no (overseas), or company reg (others).
+        // Finance confirmed: single field used for all customer types.
         var brnSelect = string.IsNullOrWhiteSpace(_settings.CustomerBrnColumn)
-            ? "CAST(NULL AS VARCHAR(20)) AS BRN"
-            : $"TRIM(c.{_settings.CustomerBrnColumn}) AS BRN";
+            ? $"'{_foreignDefaults.BuyerBRN}' AS BRN"
+            : $"COALESCE(NULLIF(TRIM(c.{_settings.CustomerBrnColumn}),''), '{_foreignDefaults.BuyerBRN}') AS BRN";
 
         return $@"SELECT
             TRIM(c.OKCUNM) AS Name,
