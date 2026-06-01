@@ -223,10 +223,13 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         }
         else
         {
+            // EphemeralKeySet: load private key directly from the .p12 file without
+            // persisting to the Windows CNG key store. Required for IIS app pool identities
+            // which have no user profile and cannot access per-user key storage.
             var cert = new X509Certificate2(
                 _settings.CertificatePath,
                 _settings.CertificatePassword,
-                X509KeyStorageFlags.Exportable);
+                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
 
             if (!cert.HasPrivateKey)
                 throw new InvalidOperationException("Certificate does not contain a private key.");
