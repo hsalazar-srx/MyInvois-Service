@@ -228,7 +228,7 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
             // which have no user profile and cannot access per-user key storage.
             var cert = new X509Certificate2(
                 _settings.CertificatePath,
-                _settings.CertificatePassword,
+                DecodeConfigPassword(_settings.CertificatePassword ?? string.Empty),
                 X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
 
             if (!cert.HasPrivateKey)
@@ -287,5 +287,21 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
     {
         try { return JsonSerializer.Deserialize<ErrorResponse>(content)?.Error?.Message ?? content; }
         catch { return content; }
+    }
+
+    // Passwords containing special characters like { } are corrupted by ASP.NET Core config
+    // token substitution when stored in appsettings.json or web.config environment variables.
+    // Store the password as Base64 in config to avoid this; this method decodes it transparently.
+    // Plain-text passwords (no special chars) still work unchanged — the method is safe either way.
+    private static string DecodeConfigPassword(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+        try
+        {
+            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(value));
+            // Only accept decode result if it looks like a printable password
+            return decoded.All(c => c >= 32 && c < 127) ? decoded : value;
+        }
+        catch { return value; }
     }
 }
