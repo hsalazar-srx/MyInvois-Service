@@ -164,6 +164,7 @@ public class SandboxSubmissionTest
 
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
+            Options.Create(new ForeignPartyDefaultsSettings()),
             new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
 
         var reader = new MovexInvoiceReader(
@@ -375,6 +376,7 @@ public class SandboxSubmissionTest
             lineItemFetcher);
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
+            Options.Create(new ForeignPartyDefaultsSettings()),
             new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
         var reader = new MovexInvoiceReader(
             dataSource, partyProvider,
@@ -704,6 +706,7 @@ public class SandboxSubmissionTest
             lineItemFetcher);
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
+            Options.Create(new ForeignPartyDefaultsSettings()),
             new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
         var reader = new MovexInvoiceReader(
             dataSource, partyProvider,

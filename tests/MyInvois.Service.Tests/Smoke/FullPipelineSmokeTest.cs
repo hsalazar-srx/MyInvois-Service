@@ -112,6 +112,7 @@ public class FullPipelineSmokeTest
 
         var partyProvider = new MovexMasterPartyDataProvider(
             Options.Create(movexDbSettings),
+            Options.Create(new ForeignPartyDefaultsSettings()),
             new LoggerFactory().CreateLogger<MovexMasterPartyDataProvider>());
 
         var reader = new MovexInvoiceReader(

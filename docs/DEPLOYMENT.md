@@ -2,7 +2,7 @@
 
 **Target Audience:** IT Operations / Development Lead
 **Version:** 2.0
-**Last Updated:** 2026-05-25
+**Last Updated:** 2026-05-27
 **Status:** UAT Active (pre-prod LHDN endpoint)
 
 ---
@@ -47,27 +47,44 @@ Keeping the process alive (as a Windows Service or IIS-hosted app) is all that i
 
 ---
 
-## Step 1 — Build the Release Package
+## UAT Deploy Workflow (Current)
 
-Run from your development machine:
+The UAT server (`SRXWEBAPP1`) does not have a direct connection to the dev machine. The workflow is:
+
+1. **Push changes** to the `develop` branch on GitHub from your dev machine
+2. **On SRXWEBAPP1**: download the branch as a zip from GitHub, extract to `C:\Projects\MyInvois-Service\v2.0\MyInvois-Service-master\`
+3. **Publish** from that extracted folder to IIS:
+   ```powershell
+   cd "C:\Projects\MyInvois-Service\v2.0\MyInvois-Service-master"
+   dotnet publish .\src\MyInvois.Api\MyInvois.Api.csproj `
+       --configuration Release `
+       --output "C:\inetpub\wwwroot\MyInvois-Api\"
+   ```
+4. **Recycle the app pool** in IIS Manager (or `Restart-WebAppPool -Name "<pool-name>"`)
+5. **Verify** the health endpoint responds: `Invoke-RestMethod http://localhost:5051/api/v1/health`
+
+> **IIS site details:** Name = `MyInvoisAPI`, Port = **5051**, root site (no virtual path prefix),
+> physical path = `C:\inetpub\wwwroot\MyInvois-Api`. PID 4 owning port 5051 is normal — that is
+> IIS kernel-mode driver (`http.sys`), not the .NET process.
+
+> Do **not** overwrite `appsettings.UAT.json` when deploying — it contains secrets and lives on
+> the server only. The zip from GitHub will not contain it.
+
+---
+
+## Step 1 — Build the Release Package (Dev Machine)
+
+Run from your development machine before pushing to GitHub:
 
 ```powershell
 cd "c:\Projects\MyInvois-Service"
 
-# 1a. Confirm all 276 tests pass before building
+# 1a. Confirm all 276 tests pass before pushing
 dotnet test --configuration Release --filter "Category!=Smoke"
 # Expected: Passed! Failed: 0, Passed: 276
 
-# 1b. Publish
-dotnet publish src/MyInvois.Api/MyInvois.Api.csproj `
-    --configuration Release `
-    --output ".\publish\uat\" `
-    --runtime win-x64 `
-    --self-contained false
-
-# 1c. Verify output
-Get-ChildItem ".\publish\uat\" | Select-Object Name, Length
-# Must include: MyInvois.Api.exe, MyInvois.Api.dll, appsettings.json
+# 1b. Push to GitHub
+git push origin develop
 ```
 
 ---
@@ -202,7 +219,7 @@ $env:ASPNETCORE_ENVIRONMENT = "UAT"
 
 Watch for startup errors. Expected log output (Serilog JSON to console):
 ```
-[INF] [] Now listening on: http://localhost:5000
+[INF] [] Now listening on: http://localhost:5051
 [INF] [] DailyBatchHostedService started. Next run at 02:00.
 [INF] [] Application started.
 ```
@@ -221,9 +238,9 @@ $yesterday = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd")
 $today     = (Get-Date).ToString("yyyy-MM-dd")
 
 $response = Invoke-RestMethod `
-    -Uri "http://localhost:5000/api/v1/batch/process-range" `
+    -Uri "http://localhost:5051/api/v1/batch/process-range" `
     -Method POST `
-    -Headers @{ "X-Api-Key" = $apiKey } `
+    -Headers @{ "X-API-Key" = $apiKey } `
     -ContentType "application/json" `
     -Body (@{ fromDate = $yesterday; toDate = $today } | ConvertTo-Json)
 
@@ -328,9 +345,9 @@ If the daily batch was missed (service was down), re-run for any date range:
 $apiKey = "<ApiKeys:Primary>"
 
 Invoke-RestMethod `
-    -Uri "http://localhost:5000/api/v1/batch/process-range" `
+    -Uri "http://localhost:5051/api/v1/batch/process-range" `
     -Method POST `
-    -Headers @{ "X-Api-Key" = $apiKey } `
+    -Headers @{ "X-API-Key" = $apiKey } `
     -ContentType "application/json" `
     -Body (@{
         fromDate = "2026-05-20"
@@ -557,5 +574,5 @@ These items are **not yet completed** — UAT is the current phase.
 ---
 
 **Deployment Owner:** Hector Salazar (Development & Integration Lead)
-**Last Updated:** 2026-05-25
+**Last Updated:** 2026-05-27
 **Next Review:** After UAT sign-off / production go-live
