@@ -214,30 +214,22 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         _logger.LogDebug("Building UBL 2.1 submission payload for invoice {InvoiceNumber}", document.InvoiceNumber);
 
         object ublDoc;
-        if (string.IsNullOrEmpty(_settings.CertificatePath))
+        if (string.IsNullOrEmpty(_settings.CertificatePath) &&
+            string.IsNullOrEmpty(_settings.CertificateThumbprint))
         {
             _logger.LogWarning(
-                "CertificatePath not configured — building unsigned UBL document for invoice {InvoiceNumber}.",
+                "Certificate not configured — building unsigned UBL document for invoice {InvoiceNumber}.",
                 document.InvoiceNumber);
             ublDoc = UblDocumentBuilder.BuildUnsigned(document);
         }
         else
         {
-            // EphemeralKeySet: load private key directly from the .p12 file without
-            // persisting to the Windows CNG key store. Required for IIS app pool identities
-            // which have no user profile and cannot access per-user key storage.
-            //
-            // Password resolution order:
-            // 1. CertificatePasswordFile — plain-text file on disk (bypasses config token substitution)
-            // 2. CertificatePassword — from config/user-secrets (may be Base64-encoded if special chars)
-            var certPassword = !string.IsNullOrWhiteSpace(_settings.CertificatePasswordFile)
-                ? File.ReadAllText(_settings.CertificatePasswordFile).Trim()
-                : DecodeConfigPassword(_settings.CertificatePassword ?? string.Empty);
-
-            var cert = new X509Certificate2(
-                _settings.CertificatePath,
-                certPassword,
-                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
+            // Load certificate from Windows Certificate Store by thumbprint (preferred for IIS)
+            // or from file path as fallback (requires EphemeralKeySet for app pool identities).
+            var cert = LoadCertificate();
+            if (cert == null)
+                throw new InvalidOperationException(
+                    $"Certificate not found. Thumbprint={_settings.CertificateThumbprint}, Path={_settings.CertificatePath}");
 
             if (!cert.HasPrivateKey)
                 throw new InvalidOperationException("Certificate does not contain a private key.");
@@ -295,6 +287,46 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
     {
         try { return JsonSerializer.Deserialize<ErrorResponse>(content)?.Error?.Message ?? content; }
         catch { return content; }
+    }
+
+    private X509Certificate2? LoadCertificate()
+    {
+        // Prefer Windows Certificate Store lookup — no password needed, works under any identity
+        // as long as the app pool has been granted private key access via certlm.msc.
+        if (!string.IsNullOrWhiteSpace(_settings.CertificateThumbprint))
+        {
+            var thumbprint = _settings.CertificateThumbprint.Replace(" ", "").ToUpperInvariant();
+            foreach (var location in new[] { StoreLocation.LocalMachine, StoreLocation.CurrentUser })
+            {
+                using var store = new X509Store(StoreName.My, location);
+                store.Open(OpenFlags.ReadOnly);
+                var matches = store.Certificates.Find(
+                    X509FindType.FindByThumbprint, thumbprint, validOnly: false);
+                if (matches.Count > 0)
+                {
+                    _logger.LogInformation("Loaded certificate from {Location} store. Thumbprint={Thumbprint}",
+                        location, thumbprint);
+                    return matches[0];
+                }
+            }
+            _logger.LogWarning("Certificate thumbprint {Thumbprint} not found in any store — falling back to file",
+                _settings.CertificateThumbprint);
+        }
+
+        // Fall back to file path (dev / non-Windows environments)
+        if (!string.IsNullOrWhiteSpace(_settings.CertificatePath))
+        {
+            var certPassword = !string.IsNullOrWhiteSpace(_settings.CertificatePasswordFile)
+                ? File.ReadAllText(_settings.CertificatePasswordFile).Trim()
+                : DecodeConfigPassword(_settings.CertificatePassword ?? string.Empty);
+
+            return new X509Certificate2(
+                _settings.CertificatePath,
+                certPassword,
+                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
+        }
+
+        return null;
     }
 
     // Passwords containing special characters like { } are corrupted by ASP.NET Core config

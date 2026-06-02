@@ -49,8 +49,17 @@ public class MyInvoisApiSettings
     /// <summary>
     /// Path to the PKCS#12 (.p12/.pfx) certificate file for XAdES signing.
     /// The certificate must be from a Malaysian CA with Key Usage = Non-Repudiation.
+    /// Not required if CertificateThumbprint is set (Windows Store lookup is preferred).
     /// </summary>
     public string CertificatePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Thumbprint of the certificate in the Windows Certificate Store (LocalMachine\My).
+    /// Preferred over CertificatePath for IIS deployments — no password required.
+    /// Grant the app pool identity read access to the private key via certlm.msc.
+    /// Example: A0E772A9F4EC1D26B732515A3430728E82D78FD7
+    /// </summary>
+    public string CertificateThumbprint { get; set; } = string.Empty;
 
     /// <summary>
     /// Password for the certificate file (from User Secrets — never hardcode).
