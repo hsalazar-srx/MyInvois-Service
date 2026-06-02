@@ -226,9 +226,17 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
             // EphemeralKeySet: load private key directly from the .p12 file without
             // persisting to the Windows CNG key store. Required for IIS app pool identities
             // which have no user profile and cannot access per-user key storage.
+            //
+            // Password resolution order:
+            // 1. CertificatePasswordFile — plain-text file on disk (bypasses config token substitution)
+            // 2. CertificatePassword — from config/user-secrets (may be Base64-encoded if special chars)
+            var certPassword = !string.IsNullOrWhiteSpace(_settings.CertificatePasswordFile)
+                ? File.ReadAllText(_settings.CertificatePasswordFile).Trim()
+                : DecodeConfigPassword(_settings.CertificatePassword ?? string.Empty);
+
             var cert = new X509Certificate2(
                 _settings.CertificatePath,
-                DecodeConfigPassword(_settings.CertificatePassword ?? string.Empty),
+                certPassword,
                 X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
 
             if (!cert.HasPrivateKey)

@@ -57,5 +57,14 @@ public class MyInvoisApiSettings
     /// User secret key: "Certificate:Password"
     /// </summary>
     public string CertificatePassword { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional path to a plain-text file containing the certificate password.
+    /// Use this instead of CertificatePassword when the password contains special
+    /// characters (e.g. { }) that ASP.NET Core config token substitution corrupts.
+    /// The file should contain only the raw password, no quotes or newlines.
+    /// Example: C:\Certs\MyInvois\cert-password.txt
+    /// </summary>
+    public string CertificatePasswordFile { get; set; } = string.Empty;
 }
 
