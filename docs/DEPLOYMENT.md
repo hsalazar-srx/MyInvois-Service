@@ -183,26 +183,53 @@ Do not overwrite `appsettings.UAT.json` if it already exists on the server (it c
 
 ---
 
-## Step 5 — Verify the Certificate
+## Step 5 — Configure the Certificate (Windows Store — Recommended)
 
-Run on SRXWEBAPP1:
+The certificate must be loaded from the **Windows Certificate Store by thumbprint** for IIS deployments.
+Loading from file path fails under IIS app pool identities due to CNG key store access restrictions,
+and passwords containing special characters (e.g. `{`) are corrupted by ASP.NET Core config token substitution.
 
+**5a. Import the certificate into the LocalMachine store:**
 ```powershell
-$certPath = "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12"
-$certPass = "<certificate password>"
+# Run as Administrator
+certlm.msc
+# Navigate to: Personal → Certificates → right-click → All Tasks → Import
+# Import: C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12
+# Store: Local Machine → Personal
+```
 
-Test-Path $certPath   # Expected: True
+**5b. Grant the app pool read access to the private key:**
+```powershell
+certlm.msc
+# Personal → Certificates → right-click SRX GLOBAL cert
+# All Tasks → Manage Private Keys → Add
+# Object: IIS AppPool\MyInvoisAPI → Check Names → OK
+# Permission: Read → OK
+```
 
-$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-    $certPath, $certPass)
-
-Write-Host "Subject:      $($cert.Subject)"
+**5c. Get the thumbprint and verify:**
+```powershell
+$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("My","LocalMachine")
+$store.Open("ReadOnly")
+$cert = $store.Certificates | Where-Object { $_.Subject -like "*SRX*" }
+Write-Host "Thumbprint:   $($cert.Thumbprint)"
 Write-Host "Expires:      $($cert.NotAfter)   (trial cert: 2026-09-05)"
 Write-Host "Has Priv Key: $($cert.HasPrivateKey)"   # Must be True
 Write-Host "Days left:    $(($cert.NotAfter - (Get-Date)).Days)"
+$store.Close()
 ```
 
-If `Has Priv Key` is `False`, the certificate file is corrupt or missing the private key — contact Finance.
+**5d. Set thumbprint in `appsettings.json`** on the server (no password needed):
+```json
+"MyInvoisApi": {
+  "CertificateThumbprint": "A0E772A9F4EC1D26B732515A3430728E82D78FD7"
+}
+```
+
+> **UAT thumbprint:** `A0E772A9F4EC1D26B732515A3430728E82D78FD7` (trial cert, expires 2026-09-05)
+>
+> **Do not** store `CertificatePassword` in `appsettings.json` or `web.config` — passwords containing
+> `{` or `}` are silently corrupted by ASP.NET Core config token substitution in all delivery mechanisms.
 
 ---
 
@@ -574,5 +601,5 @@ These items are **not yet completed** — UAT is the current phase.
 ---
 
 **Deployment Owner:** Hector Salazar (Development & Integration Lead)
-**Last Updated:** 2026-05-27
+**Last Updated:** 2026-06-01
 **Next Review:** After UAT sign-off / production go-live
