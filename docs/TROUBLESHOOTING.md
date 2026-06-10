@@ -5,6 +5,42 @@
 
 ---
 
+## Scheduler / Daily Batch Not Running
+
+### Overnight batch never fires — app shuts down before 02:00
+
+**Symptom:** Manual batch via `POST /api/v1/batch/process-range` works fine. Log shows `[DailyBatch] Next run in XXX minutes` at startup, then `Application is shutting down` and `[DailyBatch] Scheduler stopped` ~20 minutes after the last HTTP request.
+
+**Cause:** IIS default idle timeout is **20 minutes**. If no HTTP requests arrive, IIS shuts down the worker process — killing the `BackgroundService` scheduler before it reaches 02:00.
+
+**Diagnosis:**
+```powershell
+# Check idle timeout setting
+& "$env:windir\system32\inetsrv\appcmd.exe" list apppool "MyInvoisAPI" /processModel.idleTimeout
+# If output shows 00:20:00 — this is the problem
+```
+
+**Fix:**
+```powershell
+# Set idle timeout to 0 (never shut down due to inactivity)
+& "$env:windir\system32\inetsrv\appcmd.exe" set apppool "MyInvoisAPI" /processModel.idleTimeout:"00:00:00"
+
+# Disable periodic recycling (default 1740 min / 29 hours — can also kill scheduler mid-run)
+& "$env:windir\system32\inetsrv\appcmd.exe" set apppool "MyInvoisAPI" /recycling.periodicRestart.time:"00:00:00"
+
+# Recycle to apply
+& "$env:windir\system32\inetsrv\appcmd.exe" recycle apppool /apppool.name:"MyInvoisAPI"
+
+# Verify scheduler is armed
+Get-Content "C:\inetpub\wwwroot\MyInvois-Api\logs\stdout*.log" |
+    Select-String "DailyBatch" | Select-Object -Last 5
+# Expected: [DailyBatch] Next run in XXX minutes (02:00 local)
+```
+
+**Also set in IIS Manager:** Application Pools → MyInvoisAPI → Advanced Settings → **Idle Time-out = 0**, **Regular Time Interval = 0**, **Start Mode = AlwaysRunning**.
+
+---
+
 ## Startup & DI Errors
 
 ### App returns 500 on first request but health endpoint works
@@ -50,64 +86,87 @@ This confirms the endpoint exists and auth works. The 404s are from a **stale bu
 
 ## 🔐 Certificate Issues
 
-### "Certificate File Not Found"
+### Certificate loading under IIS — definitive approach (2026-06-01)
 
-```
-Error: File not found at C:\Certs\MyInvois\myinvois-cert.pfx
-```
+The UAT deployment revealed a cascade of certificate loading failures. The **correct and permanent solution** is to load the certificate from the **Windows Certificate Store by thumbprint**, not from the `.p12` file. This avoids all password delivery problems.
 
-**Diagnosis:**
-```powershell
-# Check if file exists
-Test-Path "C:\Certs\MyInvois\myinvois-cert.pfx"
+**Setup (one-time, per server):**
 
-# Check directory permissions
-icacls "C:\Certs\MyInvois"
-
-# Verify service account can read
-whoami /priv
-```
-
-**Solutions:**
-1. Verify certificate file was copied from Finance (should be ~3-5 KB)
-2. Check directory path matches appsettings.json `CertificateSettings:StoragePath`
-3. Verify directory encryption is not preventing access:
+1. Import the `.p12` into the LocalMachine store:
    ```powershell
-   cipher /s:"C:\Certs\MyInvois"
+   certlm.msc  # Certificate Manager — Personal → Import
    ```
-4. Restart service after confirming file exists
+
+2. Grant the app pool read access to the private key:
+   - In `certlm.msc`: Personal → Certificates → right-click SRX GLOBAL cert
+   - All Tasks → Manage Private Keys → Add → `IIS AppPool\MyInvoisAPI` → Read → OK
+
+3. Get the thumbprint:
+   ```powershell
+   $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("My","LocalMachine")
+   $store.Open("ReadOnly")
+   $store.Certificates | Where-Object { $_.Subject -like "*SRX*" } |
+       Select-Object Thumbprint, HasPrivateKey, NotAfter
+   $store.Close()
+   ```
+
+4. Set in `appsettings.json` on the server:
+   ```json
+   "MyInvoisApi": {
+     "CertificateThumbprint": "A0E772A9F4EC1D26B732515A3430728E82D78FD7"
+   }
+   ```
+
+No password needed. The code (`MyInvoiceSubmitter.LoadCertificate()`) tries thumbprint first, falls back to file path for local dev.
 
 ---
 
-### "Certificate Password Incorrect"
+### CryptographicException: Bad Data / The system cannot find the file specified
 
+**Root cause:** The certificate password contains `{` or `}` characters. ASP.NET Core config token substitution corrupts any value containing `{...}` when delivered via `appsettings.json`, `web.config` `<environmentVariables>`, or machine-level environment variables. The password arrives as empty or truncated → `Bad Data`.
+
+**Symptom progression:**
+- `The system cannot find the file specified` → `CngKey.Open` failed → IIS app pool has no user profile; private key stored in per-user CNG key store
+- `Bad Data` → password is empty or corrupted
+- `The specified network password is not correct` → password arrived but wrong value
+
+**Do not attempt:**
+- Storing password in `appsettings.json` (corrupted by token substitution if contains `{`)
+- Storing password in `web.config` `<environmentVariables>` (same issue)
+- Machine-level environment variables (IIS worker process may not inherit them correctly)
+- User secrets when `ASPNETCORE_ENVIRONMENT != Development` (not loaded by default)
+
+**Solution:** Use `CertificateThumbprint` (Windows Store) as above. Password not needed at all.
+
+**If file-path loading is required** (dev only), the code supports `CertificatePasswordFile`:
+```json
+"MyInvoisApi": {
+  "CertificatePasswordFile": "C:\\Certs\\MyInvois\\cert-password.txt"
+}
 ```
-Error: The supplied password is incorrect when loading certificate
+Create the file with the raw password — no quotes, no newline issues:
+```powershell
+[System.IO.File]::WriteAllText("C:\Certs\MyInvois\cert-password.txt", 'your-password')
+icacls "C:\Certs\MyInvois\cert-password.txt" /inheritance:r /grant "Administrators:R" /grant "IIS AppPool\MyInvoisAPI:R"
 ```
+
+---
+
+### "Certificate File Not Found"
 
 **Diagnosis:**
 ```powershell
-# Test certificate password retrieval
-$credManager = Get-StoredCredential -Target 'MyInvoisCert'
-Write-Host "Password stored: $($credManager -ne $null)"
-
-# Test certificate load
-$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-  "C:\Certs\MyInvois\myinvois-cert.pfx",
-  "TestPassword"
-)
+Test-Path "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12"
+Get-ChildItem "C:\Certs\MyInvois\"
+icacls "C:\Certs\MyInvois"
 ```
 
 **Solutions:**
-1. Request correct password from Finance (via secure channel, not email)
-2. Update Windows Credential Manager:
+1. Verify the `.p12` file is at the configured `CertificatePath`
+2. If using thumbprint (recommended), file path is irrelevant — confirm cert is in LocalMachine store:
    ```powershell
-   cmdkey /delete:MyInvoisCert
-   cmdkey /add:MyInvoisCert /user:admin /pass:*
-   # System will prompt for password securely
+   certlm.msc  # Personal → Certificates
    ```
-3. Restart service
-4. If still fails, request new certificate copy from Finance
 
 ---
 
@@ -769,7 +828,7 @@ $db = "E:\data\audit.db"
 
 ---
 
-**Last Updated:** 2026-05-27
+**Last Updated:** 2026-06-01
 **Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 

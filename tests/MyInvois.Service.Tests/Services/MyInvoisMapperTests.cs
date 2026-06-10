@@ -635,4 +635,64 @@ public class MyInvoisMapperTests
     delegate void TINValidateCallback(string? tin, out ValidationError? error, bool isRequired);
 
     #endregion
+
+    #region Quantity preservation tests
+
+    /// <summary>
+    /// Verifies that large quantities (as returned by DB2 DECIMAL(15,6) via ODBC)
+    /// survive the full pipeline: MovexInvoice → MyInvoiceDocument → UBL JSON unchanged.
+    /// Uses the real values from ODLINE row: UBIVQT=2000, UBSAPR=48.22, UBLNAM=96440.
+    /// </summary>
+    [Fact]
+    public void Transform_LargeQuantity_PreservedInDocumentAndUblJson()
+    {
+        // Arrange — mirror exact DB2 values from ODLINE
+        var invoice = new MovexInvoice
+        {
+            InvoiceNumber = "009710298",
+            InvoiceDate   = "20260609",
+            InvoiceType   = "Sales",
+            CompanyCode   = "100",
+            CurrencyCode  = "USD",
+            ExchangeRate  = 1.0m,
+            TotalExclTax  = 96440.00m + 4436.24m,
+            TotalTax      = 0m,
+            TotalInclTax  = 96440.00m + 4436.24m,
+            Buyer = new InvoiceParty
+            {
+                TIN = "C99999999999", Name = "Test Customer", BRN = "NA", IdScheme = "BRN"
+            },
+            Lines = new List<InvoiceLine>
+            {
+                new() { LineNumber=1, ItemNumber="PDT12341001", Description="Test Item",
+                        ClassificationCode="022", Quantity=2000m, UnitOfMeasure="EA",
+                        UnitPrice=48.22m, LineTotal=96440.00m, TaxCode="", TaxRate=0m, TaxAmount=0m },
+                new() { LineNumber=2, ItemNumber="PDT12341001", Description="Test Item",
+                        ClassificationCode="022", Quantity=92m,   UnitOfMeasure="EA",
+                        UnitPrice=48.22m, LineTotal=4436.24m,  TaxCode="", TaxRate=0m, TaxAmount=0m }
+            }
+        };
+
+        // Act
+        var doc = _sut.Transform(invoice);
+
+        // Assert — quantity must survive the mapper unchanged
+        doc.Lines[0].Quantity.Should().Be(2000m, "UBIVQT=2000 must not be altered by mapper");
+        doc.Lines[1].Quantity.Should().Be(92m,   "UBIVQT=92 must not be altered by mapper");
+
+        // Assert — quantity must survive UBL serialization unchanged
+        var ubl     = UblDocumentBuilder.BuildUnsigned(doc);
+        var json    = UblDocumentBuilder.Minify(ubl);
+        var parsed  = System.Text.Json.JsonDocument.Parse(json);
+        var lines   = parsed.RootElement
+                           .GetProperty("Invoice")[0]
+                           .GetProperty("InvoiceLine");
+
+        lines[0].GetProperty("InvoicedQuantity")[0].GetProperty("_").GetDecimal()
+                .Should().Be(2000m, "UBL InvoicedQuantity must be 2000");
+        lines[1].GetProperty("InvoicedQuantity")[0].GetProperty("_").GetDecimal()
+                .Should().Be(92m,   "UBL InvoicedQuantity must be 92");
+    }
+
+    #endregion
 }

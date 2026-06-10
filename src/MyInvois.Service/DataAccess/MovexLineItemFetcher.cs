@@ -81,13 +81,15 @@ public sealed class MovexLineItemFetcher
 
                 var parameters = new DynamicParameters();
                 parameters.Add("pCono", companyCode);
-                for (var j = 0; j < batch.Count; j++)
+                var paramIndex = 0;
+                foreach (var key in batch)
                 {
+                    parameters.Add($"p{paramIndex++}", key.Cino);
                     // ESVONO is DECIMAL in DB2 — pass as long
-                    if (long.TryParse(batch[j].Vono, out var vono))
-                        parameters.Add($"p{j}", vono);
+                    if (long.TryParse(key.Vono, out var vono))
+                        parameters.Add($"p{paramIndex++}", vono);
                     else
-                        parameters.Add($"p{j}", batch[j].Vono);
+                        parameters.Add($"p{paramIndex++}", key.Vono);
                 }
 
                 var lineItems = (await connection.QueryAsync<ArLineItemDto>(
@@ -192,11 +194,12 @@ public sealed class MovexLineItemFetcher
     ///
     /// Coverage: 117/122 (96%) of 2026 AR invoices. 5 misses are credit notes / year-end adjustments.
     /// Classification code (LHDN table) is NOT stored in MOVEX — defaults to '022' in ToLineRecord().
-    /// Parameters: CONO first, then one ESVONO per invoice.
+    /// Parameters: CONO first, then (ESCINO, ESVONO) pairs — both required because a single
+    /// ESVONO (voucher) can span multiple customer invoices in the same batch posting.
     /// </summary>
     private static string BuildArLineItemsSql(string schema, int batchSize)
     {
-        var placeholders = string.Join(",", Enumerable.Range(0, batchSize).Select(_ => "?"));
+        var valueTuples = string.Join(",", Enumerable.Range(0, batchSize).Select(_ => "(?, ?)"));
         return $@"SELECT
             TRIM(f.ESCINO) AS InvoiceNo,
             ROW_NUMBER() OVER (PARTITION BY f.ESCINO ORDER BY dl.UBPONR, dl.UBPOSX) AS LineNumber,
@@ -212,6 +215,7 @@ public sealed class MovexLineItemFetcher
         JOIN {schema}.OINVOH oh
             ON f.ESCONO = oh.UHCONO
             AND f.ESVONO = oh.UHVONO
+            AND oh.UHIVNO = TRIM(f.ESCINO)
         JOIN {schema}.ODLINE dl
             ON oh.UHCONO = dl.UBCONO
             AND oh.UHIVNO = dl.UBIVNO
@@ -221,7 +225,7 @@ public sealed class MovexLineItemFetcher
             AND dl.UBPONR = ol.OBPONR
             AND dl.UBPOSX = ol.OBPOSX
         WHERE f.ESCONO = ?
-          AND f.ESVONO IN ({placeholders})
+          AND (TRIM(f.ESCINO), f.ESVONO) IN (VALUES {valueTuples})
         ORDER BY f.ESCINO, dl.UBPONR, dl.UBPOSX";
     }
 
