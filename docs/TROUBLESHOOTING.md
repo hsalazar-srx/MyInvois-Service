@@ -5,6 +5,45 @@
 
 ---
 
+## AR Invoice Line Items — Extra Lines or Wrong Quantities
+
+### Submitted invoice has more line items than the source invoice
+
+**Symptom:** Finance reports that LHDN invoices contain extra lines not present on the original MOVEX invoice. For example, 4 lines submitted when only 2 are correct.
+
+**Cause:** The `OINVOH` join in `MovexLineItemFetcher` was under-constrained. A single `ESVONO` (voucher number) can link to multiple `OINVOH` rows when invoices are batch-posted in MOVEX. Without restricting to the specific `UHIVNO` that matches the customer invoice number (`ESCINO`), sibling invoices from the same batch posting contributed their lines.
+
+**Diagnosis:** Run against a known affected invoice:
+```sql
+SELECT TRIM(f.ESCINO) AS InvoiceNo, f.ESVONO, oh.UHIVNO, TRIM(dl.UBITNO) AS Item
+FROM mvxcdta.FSLEDG f
+JOIN mvxcdta.OINVOH oh ON f.ESCONO = oh.UHCONO AND f.ESVONO = oh.UHVONO
+JOIN mvxcdta.ODLINE dl ON oh.UHCONO = dl.UBCONO AND oh.UHIVNO = dl.UBIVNO
+WHERE f.ESCONO = 100 AND TRIM(f.ESCINO) = 'YOUR_INVOICE_NO'
+```
+If you see rows where `UHIVNO ≠ ESCINO` (numeric vs string comparison), sibling lines are being pulled.
+
+**Fix applied (2026-06-10):** `oh.UHIVNO = TRIM(f.ESCINO)` added to the OINVOH join in `MovexLineItemFetcher.BuildArLineItemsSql()`. Commit `ed68b69`.
+
+---
+
+### Submitted quantities are wrong (e.g. 2 instead of 2000)
+
+**Symptom:** Finance reports quantities in LHDN invoices are far smaller than on the original invoice — specifically by a factor that looks like trailing zeros were dropped.
+
+**Cause:** `DecimalNormalizer` in `UblDocumentBuilder` stripped integer digits. DB2 returns `ODLINE.UBIVQT` (`DECIMAL(15,6)`) as `2000.000000`. C# `decimal` preserves the scale. `ToString("G29")` gave `"2000.000000"`, then `TrimEnd('0')` produced `"2."`, then `TrimEnd('.')` produced `"2"` — three integer zeros removed.
+
+**Fix applied (2026-06-10):** `DecimalNormalizer.Write()` now only trims trailing zeros when the string contains a decimal point:
+```csharp
+var s = value.ToString("G29");
+var normalized = s.Contains('.') ? s.TrimEnd('0').TrimEnd('.') : s;
+```
+Affects all `DECIMAL(x,6)` fields from DB2: `UBIVQT` (quantity), `UBSAPR` (unit price), and any monetary value with trailing decimal zeros. Commit `ed68b69`.
+
+**Regression test:** `MyInvoisMapperTests.Transform_LargeQuantity_PreservedInDocumentAndUblJson` — verifies qty=2000 and qty=92 survive Mapper→UblBuilder→JSON unchanged.
+
+---
+
 ## Scheduler / Daily Batch Not Running
 
 ### Overnight batch never fires — app shuts down before 02:00
@@ -828,7 +867,7 @@ $db = "E:\data\audit.db"
 
 ---
 
-**Last Updated:** 2026-06-01
+**Last Updated:** 2026-06-10
 **Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 
