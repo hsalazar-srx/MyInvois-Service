@@ -5,6 +5,42 @@
 
 ---
 
+## Scheduler / Daily Batch Not Running
+
+### Overnight batch never fires — app shuts down before 02:00
+
+**Symptom:** Manual batch via `POST /api/v1/batch/process-range` works fine. Log shows `[DailyBatch] Next run in XXX minutes` at startup, then `Application is shutting down` and `[DailyBatch] Scheduler stopped` ~20 minutes after the last HTTP request.
+
+**Cause:** IIS default idle timeout is **20 minutes**. If no HTTP requests arrive, IIS shuts down the worker process — killing the `BackgroundService` scheduler before it reaches 02:00.
+
+**Diagnosis:**
+```powershell
+# Check idle timeout setting
+& "$env:windir\system32\inetsrv\appcmd.exe" list apppool "MyInvoisAPI" /processModel.idleTimeout
+# If output shows 00:20:00 — this is the problem
+```
+
+**Fix:**
+```powershell
+# Set idle timeout to 0 (never shut down due to inactivity)
+& "$env:windir\system32\inetsrv\appcmd.exe" set apppool "MyInvoisAPI" /processModel.idleTimeout:"00:00:00"
+
+# Disable periodic recycling (default 1740 min / 29 hours — can also kill scheduler mid-run)
+& "$env:windir\system32\inetsrv\appcmd.exe" set apppool "MyInvoisAPI" /recycling.periodicRestart.time:"00:00:00"
+
+# Recycle to apply
+& "$env:windir\system32\inetsrv\appcmd.exe" recycle apppool /apppool.name:"MyInvoisAPI"
+
+# Verify scheduler is armed
+Get-Content "C:\inetpub\wwwroot\MyInvois-Api\logs\stdout*.log" |
+    Select-String "DailyBatch" | Select-Object -Last 5
+# Expected: [DailyBatch] Next run in XXX minutes (02:00 local)
+```
+
+**Also set in IIS Manager:** Application Pools → MyInvoisAPI → Advanced Settings → **Idle Time-out = 0**, **Regular Time Interval = 0**, **Start Mode = AlwaysRunning**.
+
+---
+
 ## Startup & DI Errors
 
 ### App returns 500 on first request but health endpoint works

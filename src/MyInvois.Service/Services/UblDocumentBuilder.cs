@@ -616,9 +616,12 @@ public static class UblDocumentBuilder
 
         public override void Write(Utf8JsonWriter writer, decimal value, JsonSerializerOptions options)
         {
-            // Normalize: strip trailing zeros, then strip trailing decimal point.
+            // Normalize: strip trailing fractional zeros, then strip trailing decimal point.
+            // Only trim after the decimal point — never trim integer digits.
             // 160.000000 → "160", 12030.40 → "12030.4", 75.19 → "75.19"
-            var normalized = value.ToString("G29").TrimEnd('0').TrimEnd('.');
+            // 2000.000000 → "2000"  (NOT "2" — G29 gives "2000.000000", trim only after '.')
+            var s = value.ToString("G29");
+            var normalized = s.Contains('.') ? s.TrimEnd('0').TrimEnd('.') : s;
             writer.WriteRawValue(string.IsNullOrEmpty(normalized) ? "0" : normalized);
         }
     }

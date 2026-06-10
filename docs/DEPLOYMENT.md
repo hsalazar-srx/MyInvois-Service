@@ -309,32 +309,51 @@ Log in to the LHDN pre-prod portal and search for one of the submitted invoice n
 
 ---
 
-## Step 9 — Register as Windows Service (Persistent)
+## Step 9 — Configure IIS App Pool for Persistent Scheduling
 
-Stop the console process from Step 6, then register the service:
+The `DailyBatchHostedService` is an in-process `BackgroundService` that must stay alive until 02:00 AM.
+IIS has a default **idle timeout of 20 minutes** — if no HTTP requests arrive, IIS shuts down the worker
+process, killing the scheduler before it fires.
+
+> **This was confirmed in UAT (2026-06-03):** app started at 12:33, manual batch triggered at 12:34,
+> then silence → IIS killed the process at 12:54 (exactly 20 minutes). Overnight batch never ran.
+
+**Disable idle timeout and periodic recycling:**
 
 ```powershell
 # Run on SRXWEBAPP1 as Administrator
-New-Service `
-    -Name        "MyInvois-UAT" `
-    -BinaryPathName '"C:\inetpub\wwwroot\MyInvois\MyInvois.Api.exe"' `
-    -DisplayName "MyInvois UAT Service" `
-    -StartupType Automatic
+& "$env:windir\system32\inetsrv\appcmd.exe" set apppool "MyInvoisAPI" `
+    /processModel.idleTimeout:"00:00:00"
 
-# Set environment so the UAT appsettings loads
-$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\MyInvois-UAT"
-New-ItemProperty -Path $regPath -Name "Environment" -PropertyType MultiString `
-    -Value "ASPNETCORE_ENVIRONMENT=UAT" -Force
+& "$env:windir\system32\inetsrv\appcmd.exe" set apppool "MyInvoisAPI" `
+    /recycling.periodicRestart.time:"00:00:00"
 
-Start-Service -Name "MyInvois-UAT"
-Get-Service  -Name "MyInvois-UAT"   # Expected: Running
+# Verify
+& "$env:windir\system32\inetsrv\appcmd.exe" list apppool "MyInvoisAPI" /processModel.idleTimeout
+& "$env:windir\system32\inetsrv\appcmd.exe" list apppool "MyInvoisAPI" /recycling.periodicRestart.time
 ```
 
-Verify the daily scheduler is armed:
+Or via IIS Manager:
+- Application Pools → MyInvoisAPI → Advanced Settings
+- **Idle Time-out (minutes):** `0`
+- **Regular Time Interval (minutes):** `0`
+
+**Enable Always Running (optional but recommended):**
+
+In IIS Manager → Application Pools → MyInvoisAPI → Advanced Settings:
+- **Start Mode:** `AlwaysRunning` (starts the worker process immediately on IIS start, before any request)
+
+**Verify the scheduler is armed after recycling:**
+
 ```powershell
-# Should appear in the service's Serilog output / Event Log
-Get-EventLog -LogName Application -Source "MyInvois*" -Newest 20 -ErrorAction SilentlyContinue
+# Check stdout log for scheduler startup message
+Get-Content "C:\inetpub\wwwroot\MyInvois-Api\logs\stdout*.log" |
+    Select-String "DailyBatch" | Select-Object -Last 5
+# Expected: [DailyBatch] Next run in XXX minutes (02:00 local)
 ```
+
+> **Rule:** Any ASP.NET Core app hosting a `BackgroundService` scheduler under IIS must have
+> idle timeout = 0 and periodic recycling = 0. Otherwise the scheduler is silently killed.
 
 ---
 
