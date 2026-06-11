@@ -271,6 +271,8 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.SupplierIdScheme = company.IdScheme;
         document.SupplierAddress = company.Address;
         document.SupplierPhone = company.Phone;
+        document.SupplierMsicCode = company.MsicCode;
+        document.SupplierMsicDescription = company.MsicDescription;
     }
 
     private void MapOurCompanyAsBuyer(MyInvoiceDocument document, string companyCode)

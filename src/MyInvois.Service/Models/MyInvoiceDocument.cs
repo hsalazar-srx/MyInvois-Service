@@ -78,6 +78,16 @@ public class MyInvoiceDocument
     /// </summary>
     public string? SupplierPhone { get; set; }
 
+    /// <summary>
+    /// Malaysia Standard Industrial Classification (MSIC) code.
+    /// </summary>
+    public string SupplierMsicCode { get; set; } = "00000";
+
+    /// <summary>
+    /// MSIC activity description for the LHDN IndustryClassificationCode/@name field.
+    /// </summary>
+    public string SupplierMsicDescription { get; set; } = string.Empty;
+
     // ===== BUYER BLOCK (Accounting Customer Party) =====
     
     /// <summary>
