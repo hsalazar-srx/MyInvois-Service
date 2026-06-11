@@ -55,4 +55,14 @@ public class CompanyDetails
     /// Company phone number (≥8 chars, required by LHDN Contact block).
     /// </summary>
     public string? Phone { get; set; }
+
+    /// <summary>
+    /// Malaysia Standard Industrial Classification (MSIC) code.
+    /// </summary>
+    public string MsicCode { get; set; } = "00000";
+
+    /// <summary>
+    /// MSIC activity description — appears in LHDN IndustryClassificationCode/@name.
+    /// </summary>
+    public string MsicDescription { get; set; } = string.Empty;
 }

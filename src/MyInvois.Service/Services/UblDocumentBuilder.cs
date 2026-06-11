@@ -179,7 +179,7 @@ public static class UblDocumentBuilder
             {
                 new
                 {
-                    IndustryClassificationCode = new[] { new { _ = "46510", name = "Wholesale of computer hardware, software and peripherals" } },
+                    IndustryClassificationCode = new[] { new { _ = doc.SupplierMsicCode, name = doc.SupplierMsicDescription } },
                     PartyIdentification = new object[]
                     {
                         new { ID = new[] { new { _ = doc.SupplierTIN, schemeID = "TIN" } } },
