@@ -75,6 +75,7 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
                         TIN = result.TIN?.Trim(),
                         BRN = result.BRN?.Trim(),
                         Address = address,
+                        Phone = string.IsNullOrWhiteSpace(result.Phone) ? null : result.Phone.Trim(),
                         CountryCode = result.CountryCode?.Trim(),
                         IdScheme = "BRN"
                     };
@@ -124,6 +125,7 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
                         TIN = result.TIN?.Trim(),
                         BRN = result.BRN?.Trim(),
                         Address = address,
+                        Phone = string.IsNullOrWhiteSpace(result.Phone) ? null : result.Phone.Trim(),
                         CountryCode = result.CountryCode?.Trim(),
                         IdScheme = "BRN"
                     };
@@ -168,7 +170,8 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
             CAST(NULL AS VARCHAR(100)) AS Address2,
             CAST(NULL AS VARCHAR(100)) AS Address3,
             CAST(NULL AS VARCHAR(20)) AS PostalCode,
-            TRIM(s.IDCSCD) AS CountryCode
+            TRIM(s.IDCSCD) AS CountryCode,
+            TRIM(s.IDPHNO) AS Phone
         FROM {schema}.CIDMAS s
         WHERE TRIM(s.IDSUNO) = ?";
     }
@@ -196,7 +199,8 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
             TRIM(c.OKCUA2) AS Address2,
             TRIM(c.OKCUA3) AS Address3,
             TRIM(c.OKPONO) AS PostalCode,
-            TRIM(c.OKCSCD) AS CountryCode
+            TRIM(c.OKCSCD) AS CountryCode,
+            TRIM(c.OKPHNO) AS Phone
         FROM {schema}.OCUSMA c
         WHERE TRIM(c.OKCUNO) = ?";
     }
@@ -240,6 +244,7 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
         public string? Address3 { get; set; }
         public string? PostalCode { get; set; }
         public string? CountryCode { get; set; }
+        public string? Phone { get; set; }
     }
 
     private class CustomerDto
@@ -252,6 +257,7 @@ public class MovexMasterPartyDataProvider : IPartyDataProvider
         public string? Address3 { get; set; }
         public string? PostalCode { get; set; }
         public string? CountryCode { get; set; }
+        public string? Phone { get; set; }
     }
 
     #endregion

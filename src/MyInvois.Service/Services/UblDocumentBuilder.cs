@@ -187,7 +187,7 @@ public static class UblDocumentBuilder
                         new { ID = new[] { new { _ = "NA", schemeID = "SST" } } },
                         new { ID = new[] { new { _ = "NA", schemeID = "TTX" } } }
                     },
-                    PostalAddress = new[] { BuildAddress(addressLines, "MYS") },
+                    PostalAddress = new[] { BuildAddress(addressLines, doc.SupplierCountryCode, doc.SupplierStateCode) },
                     PartyLegalEntity = new[] { new { RegistrationName = V(doc.SupplierName) } },
                     Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.SupplierPhone) ? "60000000" : doc.SupplierPhone) } }
                 }
@@ -214,7 +214,7 @@ public static class UblDocumentBuilder
                         new { ID = new[] { new { _ = "NA", schemeID = "SST" } } },
                         new { ID = new[] { new { _ = "NA", schemeID = "TTX" } } }
                     },
-                    PostalAddress = new[] { BuildAddress(addressLines, "MYS") },
+                    PostalAddress = new[] { BuildAddress(addressLines, doc.BuyerCountryCode, doc.BuyerStateCode) },
                     PartyLegalEntity = new[] { new { RegistrationName = V(doc.BuyerName) } },
                     Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.BuyerPhone) ? "60000000" : doc.BuyerPhone) } }
                 }
@@ -222,23 +222,65 @@ public static class UblDocumentBuilder
         };
     }
 
-    private static object BuildAddress(string[] lines, string countryCode)
+    // Maps country codes → ISO 3166-1 alpha-3 for the LHDN IdentificationCode field.
+    // Accepts both alpha-2 (ISO standard) and alpha-3 (M3 sometimes stores 3-char codes).
+    // "OTH" is used as the safe fallback for any unmapped code.
+    private static readonly Dictionary<string, string> CountryToAlpha3 = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["MY"] = "MYS", ["MYS"] = "MYS",
+        ["AU"] = "AUS", ["AUS"] = "AUS",
+        ["SG"] = "SGP", ["SGP"] = "SGP",
+        ["US"] = "USA", ["USA"] = "USA",
+        ["GB"] = "GBR", ["GBR"] = "GBR",
+        ["DE"] = "DEU", ["DEU"] = "DEU",
+        ["JP"] = "JPN", ["JPN"] = "JPN",
+        ["CN"] = "CHN", ["CHN"] = "CHN",
+        ["TH"] = "THA", ["THA"] = "THA",
+        ["ID"] = "IDN", ["IDN"] = "IDN",
+        ["VN"] = "VNM", ["VNM"] = "VNM",
+        ["PH"] = "PHL", ["PHL"] = "PHL",
+        ["IN"] = "IND", ["IND"] = "IND",
+        ["KR"] = "KOR", ["KOR"] = "KOR",
+        ["TW"] = "TWN", ["TWN"] = "TWN",
+        ["HK"] = "HKG", ["HKG"] = "HKG",
+        ["NZ"] = "NZL", ["NZL"] = "NZL",
+        ["FR"] = "FRA", ["FRA"] = "FRA",
+        ["NL"] = "NLD", ["NLD"] = "NLD",
+        ["IT"] = "ITA", ["ITA"] = "ITA",
+        ["SE"] = "SWE", ["SWE"] = "SWE",
+        ["FI"] = "FIN", ["FIN"] = "FIN",
+        ["CH"] = "CHE", ["CHE"] = "CHE",
+        ["MX"] = "MEX", ["MEX"] = "MEX",
+        ["BR"] = "BRA", ["BRA"] = "BRA",
+        ["CA"] = "CAN", ["CAN"] = "CAN",
+    };
+
+    private static object BuildAddress(string[] lines, string? countryCode, string? stateCode = null)
     {
         var addressLines = lines.Length > 0
             ? lines.Select(l => new { Line = V(l) }).ToArray<object>()
             : new object[] { new { Line = V("NA") } };
 
+        var code = string.IsNullOrWhiteSpace(countryCode) ? "MY" : countryCode.Trim().ToUpperInvariant();
+        var alpha3 = CountryToAlpha3.TryGetValue(code, out var a3) ? a3 : "OTH";
+
+        // CountrySubentityCode: use configured state for Malaysian addresses, "NA" for all foreign parties.
+        var isMalaysia = code == "MY" || code == "MYS";
+        var resolvedState = isMalaysia
+            ? (string.IsNullOrWhiteSpace(stateCode) ? "00" : stateCode.Trim())
+            : "NA";
+
         return new
         {
             CityName = V("NA"),
             PostalZone = V("NA"),
-            CountrySubentityCode = V("10"),
+            CountrySubentityCode = V(resolvedState),
             AddressLine = addressLines,
             Country = new[]
             {
                 new
                 {
-                    IdentificationCode = new[] { new { _ = countryCode, listID = "ISO3166-1", listAgencyID = "6" } }
+                    IdentificationCode = new[] { new { _ = alpha3, listID = "ISO3166-1", listAgencyID = "6" } }
                 }
             }
         };

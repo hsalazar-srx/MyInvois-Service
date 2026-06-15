@@ -79,6 +79,18 @@ public class MyInvoiceDocument
     public string? SupplierPhone { get; set; }
 
     /// <summary>
+    /// Supplier ISO 3166-1 alpha-2 country code (e.g. "MY", "AU", "SG").
+    /// Drives country and state fields in UBL PostalAddress.
+    /// </summary>
+    public string? SupplierCountryCode { get; set; }
+
+    /// <summary>
+    /// Malaysia state code for LHDN CountrySubentityCode (e.g. "01" for Johor).
+    /// Only used when SupplierCountryCode = "MY". Null/empty → "00" (not specified).
+    /// </summary>
+    public string? SupplierStateCode { get; set; }
+
+    /// <summary>
     /// Malaysia Standard Industrial Classification (MSIC) code.
     /// </summary>
     public string SupplierMsicCode { get; set; } = "00000";
@@ -119,6 +131,18 @@ public class MyInvoiceDocument
     /// Buyer phone number (≥8 chars required by LHDN). Defaults to "60000000" if empty.
     /// </summary>
     public string? BuyerPhone { get; set; }
+
+    /// <summary>
+    /// Buyer ISO 3166-1 alpha-2 country code (e.g. "MY", "AU", "SG").
+    /// Drives country and state fields in UBL PostalAddress.
+    /// </summary>
+    public string? BuyerCountryCode { get; set; }
+
+    /// <summary>
+    /// Malaysia state code for LHDN CountrySubentityCode (e.g. "01" for Johor).
+    /// Only used when BuyerCountryCode = "MY". Null/empty → "00" (not specified).
+    /// </summary>
+    public string? BuyerStateCode { get; set; }
 
     // ===== TOTALS =====
     
