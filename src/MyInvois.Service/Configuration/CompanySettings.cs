@@ -57,6 +57,18 @@ public class CompanyDetails
     public string? Phone { get; set; }
 
     /// <summary>
+    /// ISO 3166-1 alpha-2 country code for this company (e.g. "MY").
+    /// Used to set the correct country and suppress the hardcoded Malaysian state in UBL.
+    /// </summary>
+    public string CountryCode { get; set; } = "MY";
+
+    /// <summary>
+    /// Malaysia state code for LHDN CountrySubentityCode (01=Johor, 14=W.P.Kuala Lumpur, etc.).
+    /// Only required when CountryCode = "MY". Ignored for foreign companies.
+    /// </summary>
+    public string StateCode { get; set; } = "00";
+
+    /// <summary>
     /// Malaysia Standard Industrial Classification (MSIC) code.
     /// </summary>
     public string MsicCode { get; set; } = "00000";

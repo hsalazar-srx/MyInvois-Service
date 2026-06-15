@@ -113,7 +113,17 @@ public class InvoiceParty
     /// Address
     /// </summary>
     public string? Address { get; set; }
-    
+
+    /// <summary>
+    /// Phone number from MOVEX master (OKPHNO / IDPHNO). Null if not in master data.
+    /// </summary>
+    public string? Phone { get; set; }
+
+    /// <summary>
+    /// ISO 3166-1 alpha-2 country code from MOVEX master (OKCSCD / IDCSCD).
+    /// </summary>
+    public string? CountryCode { get; set; }
+
     /// <summary>
     /// Contact Person
     /// </summary>

@@ -244,6 +244,8 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             Name = details.Name,
             BRN = brn,
             Address = details.Address,
+            Phone = details.Phone,
+            CountryCode = details.CountryCode,
             ContactPerson = details.ContactPerson,
             IdScheme = details.IdScheme
         };

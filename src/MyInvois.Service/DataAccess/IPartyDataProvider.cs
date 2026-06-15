@@ -33,6 +33,7 @@ public class PartyDetails
     public string? TIN { get; set; }
     public string? BRN { get; set; }
     public string? Address { get; set; }
+    public string? Phone { get; set; }
     public string? ContactPerson { get; set; }
     public string? CountryCode { get; set; }
     public string IdScheme { get; set; } = "BRN";

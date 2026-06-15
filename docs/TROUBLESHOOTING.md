@@ -840,6 +840,196 @@ $db = "E:\data\audit.db"
 
 ---
 
+## Audit Database Queries
+
+The audit database is at `E:\myinvois-data\audit.db` (SQLite). All queries use the `sqlite3` CLI.
+Set `$db = "E:\myinvois-data\audit.db"` before running any block below.
+
+```powershell
+$db = "E:\myinvois-data\audit.db"
+```
+
+---
+
+### Validate submitted invoices — did the MSIC / line items fix work?
+
+Check specific invoices that Finance flagged. Replace the invoice numbers as needed.
+
+```powershell
+# Status and LHDN UUID for specific invoices
+& sqlite3 $db "
+SELECT InvoiceNumber, InvoiceDate, InvoiceType, TotalAmount, CurrencyCode,
+       Status, MyInvoisStatus, MyInvoisUUID, ErrorMessage, Timestamp
+FROM AuditLogs
+WHERE InvoiceNumber IN ('009710292','009710298','009710305')
+ORDER BY Timestamp DESC;"
+```
+
+```powershell
+# All invoices submitted today — quick pass/fail overview
+& sqlite3 $db "
+SELECT InvoiceNumber, InvoiceType, Status, MyInvoisStatus, ErrorMessage
+FROM AuditLogs
+WHERE date(Timestamp) = date('now')
+ORDER BY Timestamp DESC;"
+```
+
+---
+
+### View recent submissions (last N hours)
+
+```powershell
+# Last 24 hours — all statuses
+& sqlite3 $db "
+SELECT InvoiceNumber, InvoiceType, Status, MyInvoisStatus,
+       TotalAmount, CurrencyCode, Duration, Timestamp
+FROM AuditLogs
+WHERE datetime(Timestamp) > datetime('now', '-24 hours')
+ORDER BY Timestamp DESC;"
+```
+
+```powershell
+# Last 7 days — failures only
+& sqlite3 $db "
+SELECT InvoiceNumber, InvoiceType, Status, StatusCode,
+       ErrorMessage, RetryCount, Timestamp
+FROM AuditLogs
+WHERE Status = 'Failed'
+  AND datetime(Timestamp) > datetime('now', '-7 days')
+ORDER BY Timestamp DESC;"
+```
+
+---
+
+### Check a single invoice — full detail
+
+```powershell
+# Replace 009710292 with the invoice number you want to inspect
+& sqlite3 $db "
+SELECT AuditId, InvoiceNumber, InvoiceDate, InvoiceType,
+       TotalAmount, TotalTax, CurrencyCode, ExchangeRate,
+       Status, StatusCode, MyInvoisStatus, MyInvoisUUID,
+       MyInvoisSubmissionId, SubmissionBatchId,
+       ErrorMessage, ValidationErrors,
+       RetryCount, Duration, Timestamp
+FROM AuditLogs
+WHERE InvoiceNumber = '009710292'
+ORDER BY Timestamp DESC;"
+```
+
+---
+
+### View failed submissions
+
+```powershell
+# Most recent failures
+& sqlite3 $db "
+SELECT InvoiceNumber, InvoiceType, StatusCode,
+       ErrorMessage, ValidationErrors, RetryCount, Timestamp
+FROM AuditLogs
+WHERE Status = 'Failed'
+ORDER BY Timestamp DESC
+LIMIT 20;"
+```
+
+```powershell
+# Failures with LHDN validation errors (CF321, DS302, etc.)
+& sqlite3 $db "
+SELECT InvoiceNumber, StatusCode, ErrorMessage, Timestamp
+FROM AuditLogs
+WHERE Status = 'Failed'
+  AND ErrorMessage IS NOT NULL
+  AND datetime(Timestamp) > datetime('now', '-7 days')
+ORDER BY Timestamp DESC;"
+```
+
+---
+
+### Daily / batch summary
+
+```powershell
+# Success and failure counts by day (last 14 days)
+& sqlite3 $db "
+SELECT date(Timestamp) AS Day,
+       COUNT(*) AS Total,
+       SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS Passed,
+       SUM(CASE WHEN Status='Failed'  THEN 1 ELSE 0 END) AS Failed,
+       ROUND(SUM(CASE WHEN Status='Success' THEN 1.0 ELSE 0 END)*100/COUNT(*),1) AS SuccessPct
+FROM AuditLogs
+WHERE datetime(Timestamp) > datetime('now', '-14 days')
+GROUP BY Day
+ORDER BY Day DESC;"
+```
+
+```powershell
+# Submissions in a specific batch run
+& sqlite3 $db "
+SELECT InvoiceNumber, Status, MyInvoisStatus, ErrorMessage
+FROM AuditLogs
+WHERE SubmissionBatchId = 'YOUR_BATCH_ID'
+ORDER BY Timestamp;"
+```
+
+---
+
+### Check for duplicates
+
+```powershell
+# Invoices submitted more than once
+& sqlite3 $db "
+SELECT InvoiceNumber, COUNT(*) AS SubmitCount,
+       MAX(Status) AS LastStatus, MAX(Timestamp) AS LastAttempt
+FROM AuditLogs
+WHERE InvoiceNumber IS NOT NULL
+GROUP BY InvoiceNumber
+HAVING COUNT(*) > 1
+ORDER BY SubmitCount DESC;"
+```
+
+---
+
+### Retry a failed invoice
+
+Reset an invoice back to `Pending` so the next batch run picks it up again.
+
+```powershell
+# Step 1 — find the AuditId of the failed record
+& sqlite3 $db "SELECT AuditId, InvoiceNumber, ErrorMessage FROM AuditLogs WHERE Status='Failed' AND InvoiceNumber='009710292';"
+
+# Step 2 — reset to Pending (replace AUDIT_ID_HERE with the value from Step 1)
+& sqlite3 $db "UPDATE AuditLogs SET Status='Pending', RetryCount=RetryCount+1 WHERE AuditId='AUDIT_ID_HERE';"
+```
+
+---
+
+### Monthly success rate
+
+```powershell
+# Month-by-month breakdown
+& sqlite3 $db "
+SELECT strftime('%Y-%m', Timestamp) AS Month,
+       COUNT(*) AS Total,
+       SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS Passed,
+       SUM(CASE WHEN Status='Failed'  THEN 1 ELSE 0 END) AS Failed,
+       ROUND(SUM(CASE WHEN Status='Success' THEN 1.0 ELSE 0 END)*100/COUNT(*),1) AS SuccessPct
+FROM AuditLogs
+GROUP BY Month
+ORDER BY Month DESC;"
+```
+
+---
+
+### Database health
+
+```powershell
+# Row count and WAL mode check
+& sqlite3 $db "SELECT COUNT(*) AS TotalRows FROM AuditLogs;"
+& sqlite3 $db "PRAGMA journal_mode;"   # Expected: wal
+& sqlite3 $db "PRAGMA integrity_check;" # Expected: ok
+```
+
+---
+
 ## Getting Help
 
 ### Escalation Path
@@ -867,7 +1057,7 @@ $db = "E:\data\audit.db"
 
 ---
 
-**Last Updated:** 2026-06-10
+**Last Updated:** 2026-06-11
 **Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 

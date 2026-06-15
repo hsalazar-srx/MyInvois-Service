@@ -271,6 +271,8 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.SupplierIdScheme = company.IdScheme;
         document.SupplierAddress = company.Address;
         document.SupplierPhone = company.Phone;
+        document.SupplierCountryCode = company.CountryCode;
+        document.SupplierStateCode = company.StateCode;
         document.SupplierMsicCode = company.MsicCode;
         document.SupplierMsicDescription = company.MsicDescription;
     }
@@ -291,6 +293,8 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerIdScheme = company.IdScheme;
         document.BuyerAddress = company.Address;
         document.BuyerPhone = company.Phone;
+        document.BuyerCountryCode = company.CountryCode;
+        document.BuyerStateCode = company.StateCode;
     }
 
     private void MapExternalPartyAsSupplier(MyInvoiceDocument document, InvoiceParty? supplier)
@@ -306,6 +310,8 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.SupplierBRN = supplier.BRN ?? string.Empty;
         document.SupplierIdScheme = supplier.IdScheme;
         document.SupplierAddress = supplier.Address;
+        document.SupplierPhone = supplier.Phone;
+        document.SupplierCountryCode = supplier.CountryCode;
     }
 
     private void MapExternalPartyAsBuyer(MyInvoiceDocument document, InvoiceParty? buyer)
@@ -321,6 +327,8 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerAlternativeId = buyer.AlternativeId;
         document.BuyerIdScheme = buyer.IdScheme;
         document.BuyerAddress = buyer.Address;
+        document.BuyerPhone = buyer.Phone;
+        document.BuyerCountryCode = buyer.CountryCode;
     }
 
     #endregion
