@@ -257,8 +257,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
             p.epyea4 AS VoucherYear,
             TRIM(p.epcucd) AS Currency,
             p.eparat AS FxRate,
-            p.epcuam AS InvoiceAmount,
-            p.epvtam AS GstAmount,
+            ABS(p.epcuam) AS InvoiceAmount,
+            ABS(p.epvtam) AS GstAmount,
             TRIM(g.egait1) AS GlCode
         FROM {schema}.fpledg p
         LEFT JOIN (
