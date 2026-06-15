@@ -1030,6 +1030,56 @@ ORDER BY Month DESC;"
 
 ---
 
+## AP Invoices Not Being Picked Up by Batch
+
+### No AP invoices returned despite data existing in MOVEX
+
+**Symptom:** Batch runs complete with 0 AP invoices fetched, or Finance reports that supplier invoices are missing from LHDN submissions.
+
+**Cause (transaction code):** The AP query filters on `FPLEDG.EPTRCD`. Standard M3 documentation lists `10=invoice, 20=payment` but this installation uses **non-standard codes: `40=invoice, 50=payment`**. A filter of `EPTRCD = 10` returns zero rows. Confirmed via:
+```sql
+SELECT p.EPTRCD, COUNT(*) AS RecordCount
+FROM MVXCDTA.FPLEDG p
+WHERE p.EPDIVI = 'L'
+GROUP BY p.EPTRCD
+ORDER BY RecordCount DESC
+```
+Expected result: `40` (invoices) and `50` (payments) — no `10`, `20`, `30`.
+
+**Cause (date field):** `FPLEDG.EPACDT` is the **accounting/payment date** — the date the payment was posted to the ledger, not the invoice date. Using it as the batch filter means invoices are picked up based on when they were paid, which can be weeks or months after the invoice was issued. LHDN requires submission within 7 days of the **invoice issue date** (`EPIVDT`).
+
+**Fix applied (2026-06-15, commit on develop):**
+- Date filter changed from `EPACDT` → `EPIVDT` (supplier invoice date) in all three query methods
+- Transaction code changed from `EPTRCD = 10` → `EPTRCD = 40` in all three query methods
+- `EPIVDT` now also selected in the AP header SQL so it flows through to the LHDN `IssueDate` field
+
+**If AP invoices still missing after this fix:** Verify `EPIVDT` is populated for your supplier invoices:
+```sql
+SELECT 
+    TRIM(p.EPSUNO) AS Supplier,
+    TRIM(p.EPSINO) AS InvoiceNo,
+    p.EPIVDT       AS InvoiceDate,
+    p.EPACDT       AS AccountingDate
+FROM MVXCDTA.FPLEDG p
+WHERE p.EPDIVI = 'L'
+  AND p.EPTRCD = 40
+ORDER BY p.EPACDT DESC
+FETCH FIRST 20 ROWS ONLY
+```
+If `EPIVDT` is 0 for all rows, the supplier entry operator is not entering invoice dates in MOVEX — this is a data entry process issue, not a code issue. In that case, fall back to `EPRGDT` (entry date) as a secondary filter.
+
+---
+
+### AP invoices showing wrong date on LHDN document
+
+**Symptom:** The invoice date on the LHDN self-billed invoice doesn't match the supplier's invoice date.
+
+**Cause:** Before the Sprint 9 fix, `EPACDT` (payment date) was used as both the batch filter and the invoice date. `EPACDT` can be weeks or months after the actual invoice date.
+
+**Fix applied (2026-06-15):** `EPIVDT` is now fetched and maps to `RawInvoiceRecord.InvoiceDate`, which `MovexInvoiceReader` uses preferentially over `AccountingDate` for the LHDN issue date field.
+
+---
+
 ## Getting Help
 
 ### Escalation Path
@@ -1057,7 +1107,7 @@ ORDER BY Month DESC;"
 
 ---
 
-**Last Updated:** 2026-06-11
+**Last Updated:** 2026-06-15
 **Owned By:** Operations Team
 **Review Cycle:** Monthly or as issues arise
 
