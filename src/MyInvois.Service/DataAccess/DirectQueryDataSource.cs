@@ -52,10 +52,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // eptrcd = 40: Supplier Invoice in this installation — confirmed via GROUP BY: 40=invoice, 50=payment (non-standard codes)
         // BUG FIX (Sprint 7): was BETWEEN ? AND ? but only 1 param supplied — changed to >= ? (no upper bound for "pending")
         // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 — corrected after confirming 50=payment, 40=invoice in this installation
-        // BUG FIX (Sprint 9): was epacdt (payment/accounting date) — changed to epivdt (supplier invoice date) per LHDN 7-day rule
         // BUG FIX (Sprint 9): eptrcd=10 returned no data — confirmed via SYSCOLUMNS that this installation uses 40=invoice, 50=payment
         // Country filter (idcscd <> 'MY') pending clarification: may need to include domestic suppliers — see Finance email thread
-        var apWhere = "p.epivdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
+        var apWhere = "p.epacdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
         var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
@@ -146,7 +145,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 40: Supplier Invoice in this installation (confirmed: 40=invoice, 50=payment)
-        var apWhere = "p.epivdt BETWEEN ? AND ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
+        var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
         var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
@@ -257,8 +256,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
             p.epyea4 AS VoucherYear,
             TRIM(p.epcucd) AS Currency,
             p.eparat AS FxRate,
-            ABS(p.epcuam) AS InvoiceAmount,
-            ABS(p.epvtam) AS GstAmount,
+            p.epcuam * -1 AS InvoiceAmount,
+            p.epvtam * -1 AS GstAmount,
             TRIM(g.egait1) AS GlCode
         FROM {schema}.fpledg p
         LEFT JOIN (
