@@ -110,14 +110,14 @@ public class MyInvoisMapper : IMyInvoisMapper
             // LHDN type 01 — submitting party TIN must match Supplier TIN
             document.DocumentTypeCode = "01";
             MapOurCompanyAsSupplier(document, invoice.CompanyCode);
-            MapExternalPartyAsBuyer(document, invoice.Buyer);
+            MapExternalPartyAsBuyer(document, invoice.Buyer, invoice.CompanyCode);
         }
         else // Purchase (AP)
         {
             // Purchase (AP): External supplier is the Supplier, Our company is the Buyer
             // LHDN type 11 (self-billed) — submitting party TIN must match Buyer TIN
             document.DocumentTypeCode = "11";
-            MapExternalPartyAsSupplier(document, invoice.Supplier);
+            MapExternalPartyAsSupplier(document, invoice.Supplier, invoice.CompanyCode);
             MapOurCompanyAsBuyer(document, invoice.CompanyCode);
         }
 
@@ -297,7 +297,7 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerStateCode = company.StateCode;
     }
 
-    private void MapExternalPartyAsSupplier(MyInvoiceDocument document, InvoiceParty? supplier)
+    private void MapExternalPartyAsSupplier(MyInvoiceDocument document, InvoiceParty? supplier, string companyCode)
     {
         if (supplier == null)
         {
@@ -310,11 +310,11 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.SupplierBRN = supplier.BRN ?? string.Empty;
         document.SupplierIdScheme = supplier.IdScheme;
         document.SupplierAddress = supplier.Address;
-        document.SupplierPhone = supplier.Phone;
+        document.SupplierPhone = ResolvePhone(supplier.Phone, companyCode);
         document.SupplierCountryCode = supplier.CountryCode;
     }
 
-    private void MapExternalPartyAsBuyer(MyInvoiceDocument document, InvoiceParty? buyer)
+    private void MapExternalPartyAsBuyer(MyInvoiceDocument document, InvoiceParty? buyer, string companyCode)
     {
         if (buyer == null)
         {
@@ -327,8 +327,18 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerAlternativeId = buyer.AlternativeId;
         document.BuyerIdScheme = buyer.IdScheme;
         document.BuyerAddress = buyer.Address;
-        document.BuyerPhone = buyer.Phone;
+        document.BuyerPhone = ResolvePhone(buyer.Phone, companyCode);
         document.BuyerCountryCode = buyer.CountryCode;
+    }
+
+    // Falls back to the submitting company's phone when the external party has none in MOVEX.
+    // LHDN CF414 rejects "NA" and requires Telephone ≥ 8 chars — a real number is mandatory.
+    private string? ResolvePhone(string? partyPhone, string companyCode)
+    {
+        if (!string.IsNullOrWhiteSpace(partyPhone))
+            return partyPhone;
+
+        return _companySettings.GetCompany(companyCode)?.Phone;
     }
 
     #endregion
