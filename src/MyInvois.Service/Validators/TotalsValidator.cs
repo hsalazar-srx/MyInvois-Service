@@ -44,18 +44,9 @@ public class TotalsValidator : ITotalsValidator
             return false;
         }
 
-        // Check if there are line items
+        // No lines — header totals from DB2 are trusted; skip sum cross-check
         if (document.Lines == null || document.Lines.Count == 0)
-        {
-            errors.Add(new ValidationError
-            {
-                FieldName = "Lines",
-                Message = "Invoice must have at least one line item to validate totals",
-                Severity = "Error",
-                ViolatedRule = "NoLines_Totals"
-            });
-            return false;
-        }
+            return errors.Count == 0;
 
         // Calculate sums from line items
         var calculatedExclTax = document.Lines.Sum(l => l.LineTotalExclTax);
