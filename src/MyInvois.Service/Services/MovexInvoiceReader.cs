@@ -121,7 +121,9 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             ? await _partyProvider.GetSupplierDetailsAsync(raw.PartyId, cancellationToken)
             : await _partyProvider.GetCustomerDetailsAsync(raw.PartyId, cancellationToken);
 
-        var invoiceDate = raw.InvoiceDate?.ToString() ?? raw.AccountingDate.ToString();
+        var invoiceDate = raw.InvoiceType == "AP"
+            ? raw.AccountingDate.ToString()
+            : (raw.InvoiceDate?.ToString() ?? raw.InvoiceEntryDate.ToString());
 
         var invoice = new MovexInvoice
         {
