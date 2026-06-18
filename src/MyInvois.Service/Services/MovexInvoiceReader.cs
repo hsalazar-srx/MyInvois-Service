@@ -169,7 +169,7 @@ public class MovexInvoiceReader : IMovexInvoiceReader
 
         if (invoice.Lines.Count == 0)
         {
-            _logger.LogWarning("Invoice {InvoiceNumber} has no line items", raw.InvoiceNo);
+            _logger.LogInformation("Invoice {InvoiceNumber} has no line items; header totals will be used as-is", raw.InvoiceNo);
         }
 
         // Recalculate header totals from line items for both AP and AR.

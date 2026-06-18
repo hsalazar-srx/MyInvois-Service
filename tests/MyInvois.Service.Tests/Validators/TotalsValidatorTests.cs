@@ -331,9 +331,10 @@ public class TotalsValidatorTests
     #region ValidateTotals Tests - Edge Cases
 
     [Fact]
-    public void ValidateTotals_WithNoLines_ReturnsFalse()
+    public void ValidateTotals_WithNoLines_ReturnsTrue()
     {
-        // Arrange
+        // Finance Manager directive: invoices without line items are valid —
+        // header totals from DB2 are trusted as-is when no lines are present.
         var document = new MyInvoiceDocument
         {
             TotalExclTax = 100.00m,
@@ -347,8 +348,8 @@ public class TotalsValidatorTests
         var isValid = _sut.ValidateTotals(document, out var errors);
 
         // Assert
-        isValid.Should().BeFalse();
-        errors.Should().ContainSingle(e => e.Message.Contains("line item"));
+        isValid.Should().BeTrue();
+        errors.Should().BeEmpty();
     }
 
     #endregion

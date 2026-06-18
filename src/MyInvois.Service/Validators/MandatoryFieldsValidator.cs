@@ -197,16 +197,7 @@ public class MandatoryFieldsValidator : IMandatoryFieldsValidator
     private void ValidateLineItems(MyInvoiceDocument document, List<ValidationError> errors)
     {
         if (document.Lines == null || document.Lines.Count == 0)
-        {
-            errors.Add(new ValidationError
-            {
-                FieldName = "Lines",
-                Message = "Invoice must have at least one line item",
-                Severity = "Error",
-                ViolatedRule = "MandatoryField_Lines"
-            });
             return;
-        }
 
         for (int i = 0; i < document.Lines.Count; i++)
         {
