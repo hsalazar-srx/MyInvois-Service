@@ -74,7 +74,7 @@ public class MyInvoiceDocument
     public string? SupplierAddress { get; set; }
 
     /// <summary>
-    /// Supplier phone number (≥8 chars required by LHDN). Defaults to "60000000" if empty.
+    /// Supplier phone number from MOVEX master. Defaults to "NA" if not in master data.
     /// </summary>
     public string? SupplierPhone { get; set; }
 
@@ -128,7 +128,7 @@ public class MyInvoiceDocument
     public string? BuyerAddress { get; set; }
 
     /// <summary>
-    /// Buyer phone number (≥8 chars required by LHDN). Defaults to "60000000" if empty.
+    /// Buyer phone number from MOVEX master. Defaults to "NA" if not in master data.
     /// </summary>
     public string? BuyerPhone { get; set; }
 

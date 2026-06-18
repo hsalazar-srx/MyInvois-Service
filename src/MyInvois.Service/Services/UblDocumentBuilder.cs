@@ -189,7 +189,7 @@ public static class UblDocumentBuilder
                     },
                     PostalAddress = new[] { BuildAddress(addressLines, doc.SupplierCountryCode, doc.SupplierStateCode) },
                     PartyLegalEntity = new[] { new { RegistrationName = V(doc.SupplierName) } },
-                    Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.SupplierPhone) ? "60000000" : doc.SupplierPhone) } }
+                    Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.SupplierPhone) ? "NA" : doc.SupplierPhone) } }
                 }
             }
         };
@@ -216,7 +216,7 @@ public static class UblDocumentBuilder
                     },
                     PostalAddress = new[] { BuildAddress(addressLines, doc.BuyerCountryCode, doc.BuyerStateCode) },
                     PartyLegalEntity = new[] { new { RegistrationName = V(doc.BuyerName) } },
-                    Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.BuyerPhone) ? "60000000" : doc.BuyerPhone) } }
+                    Contact = new[] { new { Telephone = V(string.IsNullOrWhiteSpace(doc.BuyerPhone) ? "NA" : doc.BuyerPhone) } }
                 }
             }
         };
