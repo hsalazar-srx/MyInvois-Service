@@ -45,7 +45,8 @@ public class MyInvoisMapperTests
                     Name = "Test Company 100 Sdn Bhd",
                     BRN = "BRN100",
                     IdScheme = "BRN",
-                    Address = "Test Address 100"
+                    Address = "Test Address 100",
+                    Phone = "6072319006"
                 },
                 ["300"] = new CompanyDetails
                 {
@@ -53,7 +54,8 @@ public class MyInvoisMapperTests
                     Name = "Test Company 300 Sdn Bhd",
                     BRN = "BRN300",
                     IdScheme = "BRN",
-                    Address = "Test Address 300"
+                    Address = "Test Address 300",
+                    Phone = "6072319006"
                 }
             }
         });
@@ -633,6 +635,93 @@ public class MyInvoisMapperTests
     // Callback delegates for out parameters
     delegate void ValidateCallback(MyInvoiceDocument doc, out List<ValidationError> errors);
     delegate void TINValidateCallback(string? tin, out ValidationError? error, bool isRequired);
+
+    #endregion
+
+    #region Phone resolution tests
+
+    [Fact]
+    public void Transform_AP_SupplierWithValidPhone_UsesSupplierPhone()
+    {
+        // Supplier has a valid phone (>= 8 chars) in CIDMAS — must be used as-is.
+        var invoice = CreateValidMovexPurchaseInvoice();
+        invoice.Supplier = new InvoiceParty { Name = "Vendor Sdn Bhd", Phone = "60123456789" };
+
+        var doc = _sut.Transform(invoice);
+
+        doc.SupplierPhone.Should().Be("60123456789");
+    }
+
+    [Fact]
+    public void Transform_AP_SupplierWithNullPhone_FallsBackToCompanyPhone()
+    {
+        // Supplier has no phone in CIDMAS — must fall back to company config phone.
+        var invoice = CreateValidMovexPurchaseInvoice();
+        invoice.Supplier = new InvoiceParty { Name = "Vendor Sdn Bhd", Phone = null };
+
+        var doc = _sut.Transform(invoice);
+
+        doc.SupplierPhone.Should().Be("6072319006");
+    }
+
+    [Fact]
+    public void Transform_AP_SupplierWithShortPhone_FallsBackToCompanyPhone()
+    {
+        // Non-blank but < 8 chars (e.g. "0" stored in CIDMAS IDPHNO) — LHDN CF414
+        // rejects these; must fall back to company phone.
+        var invoice = CreateValidMovexPurchaseInvoice();
+        invoice.Supplier = new InvoiceParty { Name = "Vendor Sdn Bhd", Phone = "0" };
+
+        var doc = _sut.Transform(invoice);
+
+        doc.SupplierPhone.Should().Be("6072319006");
+    }
+
+    [Fact]
+    public void Transform_AR_BuyerWithNullPhone_FallsBackToCompanyPhone()
+    {
+        // Customer has no phone in OCUSMA — must fall back to company config phone.
+        var invoice = CreateValidMovexSalesInvoice();
+        invoice.Buyer = new InvoiceParty { Name = "Customer Sdn Bhd", Phone = null };
+
+        var doc = _sut.Transform(invoice);
+
+        doc.BuyerPhone.Should().Be("6072319006");
+    }
+
+    [Fact]
+    public void Transform_AR_BuyerWithShortPhone_FallsBackToCompanyPhone()
+    {
+        // Customer has a phone shorter than 8 chars in OCUSMA — must fall back.
+        var invoice = CreateValidMovexSalesInvoice();
+        invoice.Buyer = new InvoiceParty { Name = "Customer Sdn Bhd", Phone = "123" };
+
+        var doc = _sut.Transform(invoice);
+
+        doc.BuyerPhone.Should().Be("6072319006");
+    }
+
+    [Fact]
+    public void Transform_AP_OurCompanyAsBuyer_UsesConfigPhone()
+    {
+        // AP: our company is always the Buyer — phone comes from config, not MOVEX master.
+        var invoice = CreateValidMovexPurchaseInvoice();
+
+        var doc = _sut.Transform(invoice);
+
+        doc.BuyerPhone.Should().Be("6072319006");
+    }
+
+    [Fact]
+    public void Transform_AR_OurCompanyAsSupplier_UsesConfigPhone()
+    {
+        // AR: our company is always the Supplier — phone comes from config, not MOVEX master.
+        var invoice = CreateValidMovexSalesInvoice();
+
+        var doc = _sut.Transform(invoice);
+
+        doc.SupplierPhone.Should().Be("6072319006");
+    }
 
     #endregion
 

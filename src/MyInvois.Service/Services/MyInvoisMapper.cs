@@ -331,12 +331,13 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerCountryCode = buyer.CountryCode;
     }
 
-    // Falls back to the submitting company's phone when the external party has none in MOVEX.
-    // LHDN CF414 rejects "NA" and requires Telephone ≥ 8 chars — a real number is mandatory.
+    // Falls back to the submitting company's phone when the external party has none or has an
+    // invalid phone in MOVEX. LHDN CF414 requires Telephone ≥ 8 chars — short/placeholder
+    // values in CIDMAS/OCUSMA (e.g. "0", "NA") are treated the same as blank.
     private string? ResolvePhone(string? partyPhone, string companyCode)
     {
-        if (!string.IsNullOrWhiteSpace(partyPhone))
-            return partyPhone;
+        if (!string.IsNullOrWhiteSpace(partyPhone) && partyPhone.Trim().Length >= 8)
+            return partyPhone.Trim();
 
         return _companySettings.GetCompany(companyCode)?.Phone;
     }
