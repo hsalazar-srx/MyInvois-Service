@@ -244,9 +244,10 @@ public class MovexInvoiceReaderTests
     }
 
     [Fact]
-    public async Task GetPendingInvoices_WithNoLineItems_ReturnsEmptyLines()
+    public async Task GetPendingInvoices_WithNoLineItems_GeneratesSyntheticLine()
     {
-        // Arrange
+        // LHDN requires at least one InvoiceLine (TooFewItems). When MOVEX has no line detail
+        // for a voucher, a synthetic line is generated from the header totals.
         var fromDate = new DateTime(2026, 1, 1);
         var rawRecords = new List<RawInvoiceRecord>
         {
@@ -258,7 +259,7 @@ public class MovexInvoiceReaderTests
                 VoucherNumber = "V001",
                 Currency = "MYR",
                 InvoiceAmount = 100.00m,
-                GstAmount = 0m,
+                GstAmount = 6.00m,
                 InvoiceType = "AR",
                 CompanyCode = "100"
             }
@@ -277,7 +278,11 @@ public class MovexInvoiceReaderTests
 
         // Assert
         result.Should().HaveCount(1);
-        result[0].Lines.Should().BeEmpty();
+        result[0].Lines.Should().HaveCount(1, "synthetic line must be generated when no lines exist");
+        result[0].Lines[0].LineNumber.Should().Be(1);
+        result[0].Lines[0].Quantity.Should().Be(1m);
+        result[0].Lines[0].ClassificationCode.Should().Be("022");
+        result[0].Lines[0].TaxAmount.Should().Be(6.00m);
     }
 
     [Fact]
