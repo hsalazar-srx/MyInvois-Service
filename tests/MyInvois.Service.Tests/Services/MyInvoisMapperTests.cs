@@ -643,13 +643,29 @@ public class MyInvoisMapperTests
     [Fact]
     public void Transform_AP_SupplierWithValidPhone_UsesSupplierPhone()
     {
-        // Supplier has a valid phone (>= 8 chars) in CIDMAS — must be used as-is.
+        // Digits-only phone — returned as-is.
         var invoice = CreateValidMovexPurchaseInvoice();
         invoice.Supplier = new InvoiceParty { Name = "Vendor Sdn Bhd", Phone = "60123456789" };
 
         var doc = _sut.Transform(invoice);
 
         doc.SupplierPhone.Should().Be("60123456789");
+    }
+
+    [Theory]
+    [InlineData("+852 3101 4700", "85231014700")]   // HK format from CIDMAS IDPHNO
+    [InlineData("+44 782 500 4079", "447825004079")] // UK format from CIDMAS IDPHNO
+    [InlineData("+60-7-231-9006", "6072319006")]     // MY with hyphens
+    public void Transform_AP_SupplierWithFormattedPhone_StripsNonDigitsAndUses(string raw, string expected)
+    {
+        // CIDMAS IDPHNO often contains "+", spaces, hyphens — LHDN CF410 requires digits only.
+        // Non-digit chars are stripped; if >= 8 digits remain, the cleaned value is used.
+        var invoice = CreateValidMovexPurchaseInvoice();
+        invoice.Supplier = new InvoiceParty { Name = "Vendor Sdn Bhd", Phone = raw };
+
+        var doc = _sut.Transform(invoice);
+
+        doc.SupplierPhone.Should().Be(expected);
     }
 
     [Fact]
