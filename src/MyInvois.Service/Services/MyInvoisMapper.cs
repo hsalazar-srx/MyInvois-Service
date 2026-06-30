@@ -331,13 +331,18 @@ public class MyInvoisMapper : IMyInvoisMapper
         document.BuyerCountryCode = buyer.CountryCode;
     }
 
-    // Falls back to the submitting company's phone when the external party has none or has an
-    // invalid phone in MOVEX. LHDN CF414 requires Telephone ≥ 8 chars — short/placeholder
-    // values in CIDMAS/OCUSMA (e.g. "0", "NA") are treated the same as blank.
+    // LHDN CF410/CF414: phone must be digits only, >= 8 chars.
+    // CIDMAS/OCUSMA IDPHNO/OKPHNO often contain "+", spaces, or hyphens (e.g. "+852 3101 4700")
+    // which LHDN rejects. Strip all non-digits before the length check.
+    // If the cleaned value is too short, fall back to the company config phone.
     private string? ResolvePhone(string? partyPhone, string companyCode)
     {
-        if (!string.IsNullOrWhiteSpace(partyPhone) && partyPhone.Trim().Length >= 8)
-            return partyPhone.Trim();
+        if (!string.IsNullOrWhiteSpace(partyPhone))
+        {
+            var digits = new string(partyPhone.Where(char.IsDigit).ToArray());
+            if (digits.Length >= 8)
+                return digits;
+        }
 
         return _companySettings.GetCompany(companyCode)?.Phone;
     }

@@ -125,13 +125,18 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             ? raw.AccountingDate.ToString()
             : (raw.InvoiceDate?.ToString() ?? raw.InvoiceEntryDate.ToString());
 
+        // FPLEDG.EPARAT is 0 when the invoice is in the functional currency (MYR) — no rate stored.
+        // Treat 0 as 1.0 so the document is valid; the CurrencyValidator will still reject a
+        // non-MYR invoice where a real rate was never populated.
+        var fxRate = raw.FxRate == 0m ? 1.0m : raw.FxRate;
+
         var invoice = new MovexInvoice
         {
             InvoiceNumber = raw.InvoiceNo,
             InvoiceDate = invoiceDate,
             InvoiceType = raw.InvoiceType == "AP" ? "Purchase" : "Sales",
             CurrencyCode = raw.Currency.Trim(),
-            ExchangeRate = raw.FxRate,
+            ExchangeRate = fxRate,
             TotalInclTax = raw.InvoiceAmount,
             TotalTax = raw.GstAmount,
             TotalExclTax = raw.InvoiceAmount - raw.GstAmount,
@@ -169,7 +174,24 @@ public class MovexInvoiceReader : IMovexInvoiceReader
 
         if (invoice.Lines.Count == 0)
         {
-            _logger.LogInformation("Invoice {InvoiceNumber} has no line items; header totals will be used as-is", raw.InvoiceNo);
+            // LHDN requires at least one InvoiceLine (TooFewItems error if empty).
+            // FPLEDG/FSLEDG has no line detail for this voucher — synthesise a single line
+            // from the header totals so the document structure is valid.
+            _logger.LogInformation("Invoice {InvoiceNumber} has no line items; generating synthetic line from header totals", raw.InvoiceNo);
+            invoice.Lines.Add(new InvoiceLine
+            {
+                LineNumber = 1,
+                ItemNumber = string.Empty,
+                Description = "Invoice",
+                ClassificationCode = "022",   // "Others" — Finance default until LHDN codes are mapped
+                Quantity = 1m,
+                UnitOfMeasure = "EA",
+                UnitPrice = invoice.TotalExclTax,
+                LineTotal = invoice.TotalExclTax,
+                TaxCode = invoice.TotalTax > 0 ? "01" : "E",
+                TaxRate = invoice.TotalExclTax > 0 ? Math.Round(invoice.TotalTax / invoice.TotalExclTax * 100, 2) : 0m,
+                TaxAmount = invoice.TotalTax
+            });
         }
 
         // Recalculate header totals from line items for both AP and AR.
