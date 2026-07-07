@@ -171,7 +171,9 @@ public class AuditLogger : IAuditLogger
     private static string? MapInvoiceType(string? documentTypeCode) => documentTypeCode switch
     {
         "01" => "Sales",
-        "02" => "Purchase",
+        "02" => "Sales Credit Note",
+        "11" => "Purchase",
+        "12" => "Purchase Credit Note",
         _    => documentTypeCode
     };
 }

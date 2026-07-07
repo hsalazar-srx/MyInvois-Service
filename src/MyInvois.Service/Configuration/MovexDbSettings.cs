@@ -73,9 +73,15 @@ public class MovexDbSettings
     public string ArDivision { get; set; } = "L";
 
     /// <summary>
-    /// AR transaction code filter — FSLEDG.ESTRCD (e.g., "10")
+    /// AR transaction code for sales invoices — FSLEDG.ESTRCD (e.g., "10")
     /// </summary>
     public string ArTransCode { get; set; } = "10";
+
+    /// <summary>
+    /// AR transaction code for credit notes — FSLEDG.ESTRCD (e.g., "20").
+    /// Rows with this code are mapped to LHDN document type "02" (credit note).
+    /// </summary>
+    public string ArCreditNoteTransCode { get; set; } = "20";
 
     /// <summary>
     /// AR customer status filter — OCUSMA.OKSTAT (e.g., "20" = active)

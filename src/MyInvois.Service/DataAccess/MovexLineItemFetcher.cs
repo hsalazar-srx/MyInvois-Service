@@ -255,10 +255,10 @@ public sealed class MovexLineItemFetcher
             '022' AS ClassificationCode,
             li.F5IVQT AS Quantity,
             COALESCE(TRIM(po.IBPUUN), 'EA') AS UnitOfMeasure,
-            CASE WHEN li.F5IVQT <> 0
+            ROUND(CASE WHEN li.F5IVQT <> 0
                  THEN li.F5IVNA / li.F5IVQT
                  ELSE li.F5IVOC
-            END AS UnitPrice,
+            END, 4) AS UnitPrice,
             li.F5IVNA AS LineTotal,
             COALESCE(TRIM(li.F5VTCD), '') AS TaxCode,
             COALESCE(vat.VatAmount, 0) AS TaxAmount

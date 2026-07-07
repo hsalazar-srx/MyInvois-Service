@@ -103,20 +103,19 @@ public class MyInvoisMapper : IMyInvoisMapper
             PayableAmount = invoice.TotalInclTax
         };
 
-        // Map parties and document type based on invoice type
+        // Map parties and document type based on invoice type and MOVEX transaction code.
+        // AR ESTRCD=10 → LHDN "01" (invoice), ESTRCD=20 → LHDN "02" (credit note).
+        // AP self-billed: LHDN "11" (self-billed invoice), "12" (self-billed credit note).
+        var isCreditNote = invoice.TransCode == "20";
         if (invoice.InvoiceType == "Sales")
         {
-            // Sales (AR): Our company is the Supplier, Customer is the Buyer
-            // LHDN type 01 — submitting party TIN must match Supplier TIN
-            document.DocumentTypeCode = "01";
+            document.DocumentTypeCode = isCreditNote ? "02" : "01";
             MapOurCompanyAsSupplier(document, invoice.CompanyCode);
             MapExternalPartyAsBuyer(document, invoice.Buyer, invoice.CompanyCode);
         }
         else // Purchase (AP)
         {
-            // Purchase (AP): External supplier is the Supplier, Our company is the Buyer
-            // LHDN type 11 (self-billed) — submitting party TIN must match Buyer TIN
-            document.DocumentTypeCode = "11";
+            document.DocumentTypeCode = isCreditNote ? "12" : "11";
             MapExternalPartyAsSupplier(document, invoice.Supplier, invoice.CompanyCode);
             MapOurCompanyAsBuyer(document, invoice.CompanyCode);
         }

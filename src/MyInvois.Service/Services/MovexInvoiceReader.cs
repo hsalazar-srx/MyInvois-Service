@@ -125,16 +125,20 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             ? raw.AccountingDate.ToString()
             : (raw.InvoiceDate?.ToString() ?? raw.InvoiceEntryDate.ToString());
 
-        // FPLEDG.EPARAT is 0 when the invoice is in the functional currency (MYR) — no rate stored.
-        // Treat 0 as 1.0 so the document is valid; the CurrencyValidator will still reject a
-        // non-MYR invoice where a real rate was never populated.
-        var fxRate = raw.FxRate == 0m ? 1.0m : raw.FxRate;
+        // FPLEDG.EPARAT for MYR invoices: 0 means "no rate stored" (functional currency).
+        // Some AP vouchers also carry a stale cross-rate (e.g. 0.25) from a previous foreign
+        // currency posting on the same supplier account — never correct for a MYR invoice.
+        // Normalise: any MYR invoice always gets rate 1.0; for foreign currencies treat 0 as 1.0
+        // (real rate was never populated — CurrencyValidator will reject if truly wrong).
+        var isMyr = raw.Currency.Trim().Equals("MYR", StringComparison.OrdinalIgnoreCase);
+        var fxRate = isMyr ? 1.0m : (raw.FxRate == 0m ? 1.0m : raw.FxRate);
 
         var invoice = new MovexInvoice
         {
             InvoiceNumber = raw.InvoiceNo,
             InvoiceDate = invoiceDate,
             InvoiceType = raw.InvoiceType == "AP" ? "Purchase" : "Sales",
+            TransCode = raw.TransCode,
             CurrencyCode = raw.Currency.Trim(),
             ExchangeRate = fxRate,
             TotalInclTax = raw.InvoiceAmount,
@@ -156,21 +160,35 @@ public class MovexInvoiceReader : IMovexInvoiceReader
                 invoice.Buyer = party;
         }
 
-        // Map line items from raw record (OINVOL + MITMAS)
-        invoice.Lines = raw.Lines.Select(line => new InvoiceLine
-        {
-            LineNumber = line.LineNumber,
-            ItemNumber = line.ItemNumber,
-            Description = line.Description,
-            ClassificationCode = line.ClassificationCode,
-            Quantity = line.Quantity,
-            UnitOfMeasure = line.UnitOfMeasure,
-            UnitPrice = line.UnitPrice,
-            LineTotal = line.LineTotal,
-            TaxCode = line.TaxCode,
-            TaxRate = line.TaxRate,
-            TaxAmount = line.TaxAmount
-        }).ToList();
+        // Map line items — skip zero-quantity lines (ODLINE.UBIVQT = 0 occurs on free-of-charge
+        // or service lines in MOVEX that carry no deliverable qty). LHDN rejects Quantity ≤ 0.
+        // If all lines are zero-qty the invoice.Lines remains empty and the synthetic-line
+        // fallback below synthesises a valid single line from the header totals.
+        // LHDN rejects Quantity ≤ 0. Credit note return lines carry negative UBIVQT in MOVEX;
+        // zero-qty lines are free-of-charge/service lines with no deliverable quantity.
+        // Both are excluded by the != 0 check; negative quantities are sign-flipped via Abs
+        // so the line is preserved with its correct LineTotal (already negative for credits).
+        invoice.Lines = raw.Lines
+            .Where(line => line.Quantity != 0m)
+            .Select(line => new InvoiceLine
+            {
+                LineNumber = line.LineNumber,
+                ItemNumber = line.ItemNumber,
+                Description = line.Description,
+                ClassificationCode = line.ClassificationCode,
+                Quantity = Math.Abs(line.Quantity),
+                UnitOfMeasure = line.UnitOfMeasure,
+                UnitPrice = line.UnitPrice,
+                LineTotal = line.LineTotal,
+                TaxCode = line.TaxCode,
+                TaxRate = line.TaxRate,
+                TaxAmount = line.TaxAmount
+            }).ToList();
+
+        if (raw.Lines.Count > 0 && invoice.Lines.Count < raw.Lines.Count)
+            _logger.LogInformation(
+                "Invoice {InvoiceNumber}: skipped {Skipped} zero-quantity line(s) from MOVEX",
+                raw.InvoiceNo, raw.Lines.Count - invoice.Lines.Count);
 
         if (invoice.Lines.Count == 0)
         {

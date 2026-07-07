@@ -445,6 +445,146 @@ public class MovexInvoiceReaderTests
         invoice.Supplier.BRN.Should().Be("202001012345");
     }
 
+    #region FX rate normalisation
+
+    [Theory]
+    [InlineData("MYR", "0.0")]    // FPLEDG.EPARAT = 0 — functional currency, no rate stored
+    [InlineData("MYR", "0.25")]   // stale cross-rate from a previous foreign voucher on same supplier
+    [InlineData("MYR", "4.45")]   // any non-1.0 rate for MYR is invalid — always override to 1.0
+    public async Task GetPendingInvoices_MyrInvoiceWithAnyFxRate_NormalisesToOne(string currency, string rawRateStr)
+    {
+        var rawRate = decimal.Parse(rawRateStr);
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "SUP001", InvoiceNo = "MYR-RATE-TEST",
+                    AccountingDate = 20260101, VoucherNumber = "V001",
+                    Currency = currency, FxRate = rawRate,
+                    InvoiceAmount = 1060m, GstAmount = 60m,
+                    InvoiceType = "AP", CompanyCode = "100"
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetSupplierDetailsAsync("SUP001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "SUP001", Name = "Supplier", CountryCode = "MY" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].ExchangeRate.Should().Be(1.0m);
+    }
+
+    [Fact]
+    public async Task GetPendingInvoices_ForeignInvoiceWithZeroFxRate_NormalisesToOne()
+    {
+        // FPLEDG.EPARAT = 0 for a USD invoice means the rate was never recorded.
+        // Normalise to 1.0 so the document is structurally valid; CurrencyValidator will flag it.
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "SUP001", InvoiceNo = "USD-ZERO-RATE",
+                    AccountingDate = 20260101, VoucherNumber = "V001",
+                    Currency = "USD", FxRate = 0m,
+                    InvoiceAmount = 1000m, GstAmount = 0m,
+                    InvoiceType = "AP", CompanyCode = "100"
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetSupplierDetailsAsync("SUP001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "SUP001", Name = "Supplier", CountryCode = "SG" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].ExchangeRate.Should().Be(1.0m);
+    }
+
+    #endregion
+
+    #region Zero-quantity line filtering
+
+    [Fact]
+    public async Task GetPendingInvoices_WithZeroQuantityLine_SkipsZeroQtyLine()
+    {
+        // ODLINE.UBIVQT = 0 for free-of-charge / service lines. LHDN rejects Quantity <= 0.
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "CUST001", InvoiceNo = "ZERO-QTY-001",
+                    AccountingDate = 20260101, InvoiceDate = 20260101,
+                    VoucherNumber = "V001", Currency = "USD", FxRate = 4.45m,
+                    InvoiceAmount = 1000m, GstAmount = 0m,
+                    InvoiceType = "AR", CompanyCode = "100",
+                    Lines = new List<RawInvoiceLineRecord>
+                    {
+                        new() { LineNumber = 1, Description = "Normal line", ClassificationCode = "022",
+                                Quantity = 5m, UnitOfMeasure = "EA", UnitPrice = 200m, LineTotal = 1000m,
+                                TaxCode = "", TaxRate = 0m, TaxAmount = 0m },
+                        new() { LineNumber = 2, Description = "Zero qty line", ClassificationCode = "022",
+                                Quantity = 0m, UnitOfMeasure = "EA", UnitPrice = 0m, LineTotal = 0m,
+                                TaxCode = "", TaxRate = 0m, TaxAmount = 0m }
+                    }
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetCustomerDetailsAsync("CUST001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "CUST001", Name = "Customer", CountryCode = "SG" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].Lines.Should().HaveCount(1);
+        result[0].Lines[0].Quantity.Should().Be(5m);
+    }
+
+    [Fact]
+    public async Task GetPendingInvoices_AllLinesZeroQuantity_GeneratesSyntheticLine()
+    {
+        // When all lines have zero quantity they are all skipped → synthetic line fallback.
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "CUST001", InvoiceNo = "ALL-ZERO-QTY",
+                    AccountingDate = 20260101, InvoiceDate = 20260101,
+                    VoucherNumber = "V001", Currency = "USD", FxRate = 4.45m,
+                    InvoiceAmount = 114284.72m, GstAmount = 0m,
+                    InvoiceType = "AR", CompanyCode = "100",
+                    Lines = new List<RawInvoiceLineRecord>
+                    {
+                        new() { LineNumber = 1, Description = "Zero qty", ClassificationCode = "022",
+                                Quantity = 0m, UnitOfMeasure = "EA", UnitPrice = 0m, LineTotal = 0m,
+                                TaxCode = "", TaxRate = 0m, TaxAmount = 0m }
+                    }
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetCustomerDetailsAsync("CUST001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "CUST001", Name = "Customer", CountryCode = "SG" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        // Should have exactly one synthetic line with Quantity = 1
+        result[0].Lines.Should().HaveCount(1);
+        result[0].Lines[0].Quantity.Should().Be(1m);
+        result[0].Lines[0].Description.Should().Be("Invoice");
+        result[0].Lines[0].ClassificationCode.Should().Be("022");
+    }
+
+    #endregion
+
     [Fact]
     public async Task GetPendingInvoices_NullCountryCode_TreatedAsForeign()
     {

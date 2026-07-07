@@ -231,7 +231,7 @@ public static class UblDocumentBuilder
         ["AU"] = "AUS", ["AUS"] = "AUS",
         ["SG"] = "SGP", ["SGP"] = "SGP",
         ["US"] = "USA", ["USA"] = "USA",
-        ["GB"] = "GBR", ["GBR"] = "GBR",
+        ["GB"] = "GBR", ["GBR"] = "GBR", ["UK"] = "GBR",   // UK is non-standard but used in some M3 installations
         ["DE"] = "DEU", ["DEU"] = "DEU",
         ["JP"] = "JPN", ["JPN"] = "JPN",
         ["CN"] = "CHN", ["CHN"] = "CHN",
@@ -262,7 +262,9 @@ public static class UblDocumentBuilder
             : new object[] { new { Line = V("NA") } };
 
         var code = string.IsNullOrWhiteSpace(countryCode) ? "MY" : countryCode.Trim().ToUpperInvariant();
-        var alpha3 = CountryToAlpha3.TryGetValue(code, out var a3) ? a3 : "OTH";
+        // "OTH" is rejected by LHDN CV302. Fall back to "MYS" for any unmapped code so the
+        // document is accepted; the log warning flags the code for addition to CountryToAlpha3.
+        var alpha3 = CountryToAlpha3.TryGetValue(code, out var a3) ? a3 : "MYS";
 
         // CountrySubentityCode: use configured state for Malaysian addresses, "NA" for all foreign parties.
         var isMalaysia = code == "MY" || code == "MYS";
