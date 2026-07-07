@@ -138,6 +138,7 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             InvoiceNumber = raw.InvoiceNo,
             InvoiceDate = invoiceDate,
             InvoiceType = raw.InvoiceType == "AP" ? "Purchase" : "Sales",
+            TransCode = raw.TransCode,
             CurrencyCode = raw.Currency.Trim(),
             ExchangeRate = fxRate,
             TotalInclTax = raw.InvoiceAmount,
@@ -163,6 +164,10 @@ public class MovexInvoiceReader : IMovexInvoiceReader
         // or service lines in MOVEX that carry no deliverable qty). LHDN rejects Quantity ≤ 0.
         // If all lines are zero-qty the invoice.Lines remains empty and the synthetic-line
         // fallback below synthesises a valid single line from the header totals.
+        // LHDN rejects Quantity ≤ 0. Credit note return lines carry negative UBIVQT in MOVEX;
+        // zero-qty lines are free-of-charge/service lines with no deliverable quantity.
+        // Both are excluded by the != 0 check; negative quantities are sign-flipped via Abs
+        // so the line is preserved with its correct LineTotal (already negative for credits).
         invoice.Lines = raw.Lines
             .Where(line => line.Quantity != 0m)
             .Select(line => new InvoiceLine
@@ -171,7 +176,7 @@ public class MovexInvoiceReader : IMovexInvoiceReader
                 ItemNumber = line.ItemNumber,
                 Description = line.Description,
                 ClassificationCode = line.ClassificationCode,
-                Quantity = line.Quantity,
+                Quantity = Math.Abs(line.Quantity),
                 UnitOfMeasure = line.UnitOfMeasure,
                 UnitPrice = line.UnitPrice,
                 LineTotal = line.LineTotal,

@@ -57,6 +57,12 @@ public class MovexInvoice
     /// Voucher Number — fpledg.epvono / fsledg.esvono (used for GL join and audit trail)
     /// </summary>
     public string VoucherNumber { get; set; } = string.Empty;
+
+    /// <summary>
+    /// MOVEX transaction code — FSLEDG.ESTRCD. "10" = invoice, "20" = credit note (AR only).
+    /// Used to derive LHDN DocumentTypeCode: "01" invoice, "02" credit note.
+    /// </summary>
+    public string? TransCode { get; set; }
     
     /// <summary>
     /// Supplier/Seller Information

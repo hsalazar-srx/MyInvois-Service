@@ -54,8 +54,10 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 — corrected after confirming 50=payment, 40=invoice in this installation
         // BUG FIX (Sprint 9): eptrcd=10 returned no data — confirmed via SYSCOLUMNS that this installation uses 40=invoice, 50=payment
         // Country filter (idcscd <> 'MY') pending clarification: may need to include domestic suppliers — see Finance email thread
+        // AR: ESTRCD=10=invoice, ESTRCD=20=credit note. ESCUAM > 0 excludes reversal postings
+        // (ESTRCD=10 with negative ESCUAM = accounting reversal entry, not a submittable document).
         var apWhere = "p.epacdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
-        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -64,8 +66,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
         arParams.Add("p0", ToMovexDate(fromDate));
         arParams.Add("p1", _settings.ArDivision);
         arParams.Add("p2", _settings.ArTransCode);
-        arParams.Add("p3", _settings.ArCustomerStatus);
-        arParams.Add("p4", _settings.ArMinYear);
+        arParams.Add("p3", _settings.ArCreditNoteTransCode);
+        arParams.Add("p4", _settings.ArCustomerStatus);
+        arParams.Add("p5", _settings.ArMinYear);
 
         return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
@@ -107,12 +110,13 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ?");
+                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
                 parameters.Add("p2", _settings.ArTransCode);
-                parameters.Add("p3", _settings.ArCustomerStatus);
+                parameters.Add("p3", _settings.ArCreditNoteTransCode);
+                parameters.Add("p4", _settings.ArCustomerStatus);
 
                 record = (await connection.QueryAsync<RawInvoiceRecord>(
                     new CommandDefinition(sql, parameters,
@@ -145,8 +149,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 40: Supplier Invoice in this installation (confirmed: 40=invoice, 50=payment)
+        // AR: ESTRCD IN (10,20) fetches both invoices and credit notes. ESCUAM > 0 excludes reversal postings.
         var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
-        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -157,8 +162,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
         arParams.Add("p1", ToMovexDate(toDate));
         arParams.Add("p2", _settings.ArDivision);
         arParams.Add("p3", _settings.ArTransCode);
-        arParams.Add("p4", _settings.ArCustomerStatus);
-        arParams.Add("p5", _settings.ArMinYear);
+        arParams.Add("p4", _settings.ArCreditNoteTransCode);
+        arParams.Add("p5", _settings.ArCustomerStatus);
+        arParams.Add("p6", _settings.ArMinYear);
 
         return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
