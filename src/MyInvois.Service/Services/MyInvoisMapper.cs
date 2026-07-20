@@ -316,8 +316,10 @@ public class MyInvoisMapper : IMyInvoisMapper
         // External suppliers have no MSIC data in MOVEX — use our company's classification
         // as the submitting entity for self-billed invoices (type 11/12).
         var company = _companySettings.GetCompany(companyCode);
-        document.SupplierMsicCode = company?.MsicCode ?? "00000";
-        document.SupplierMsicDescription = company?.MsicDescription ?? string.Empty;
+        if (company == null)
+            _logger.LogWarning("Company code {CompanyCode} not found in configuration. Using placeholder MSIC values for external supplier.", companyCode);
+        document.SupplierMsicCode = string.IsNullOrWhiteSpace(company?.MsicCode) ? "00000" : company.MsicCode;
+        document.SupplierMsicDescription = string.IsNullOrWhiteSpace(company?.MsicDescription) ? "NA" : company.MsicDescription;
     }
 
     private void MapExternalPartyAsBuyer(MyInvoiceDocument document, InvoiceParty? buyer, string companyCode)
