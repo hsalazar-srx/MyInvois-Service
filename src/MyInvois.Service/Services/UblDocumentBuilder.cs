@@ -625,7 +625,7 @@ public static class UblDocumentBuilder
 
     // CF366: TaxExemptionReason is mandatory when TaxCategory is exempt or zero-rated.
     // Returns null for taxable categories so the field is omitted (WhenWritingNull serializer).
-    private static string? MapExemptionReason(string taxCode) =>
+    private static string? MapExemptionReason(string? taxCode) =>
         taxCode?.ToUpperInvariant() switch
         {
             "E" or "03" => "Exempt Supply",
