@@ -92,7 +92,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
             if (invoiceType == "AP")
             {
-                var sql        = BuildApHeaderSql(schema, "TRIM(p.epsino) = ? AND p.eptrcd = 40 AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')");
+                var sql        = BuildApHeaderSql(schema, "TRIM(p.epsino) = ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
 
