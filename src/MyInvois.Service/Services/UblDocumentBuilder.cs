@@ -364,9 +364,7 @@ public static class UblDocumentBuilder
                                 new
                                 {
                                     ID = V(MapTaxCategory(line.TaxCode)),
-                                    TaxExemptionReason = MapExemptionReason(line.TaxCode) != null
-                                        ? V(MapExemptionReason(line.TaxCode)!)
-                                        : (object?)null,
+                                    TaxExemptionReason = MapExemptionReason(line.TaxCode) is { } reason ? V(reason) : (object?)null,
                                     TaxScheme = new[]
                                     {
                                         new
