@@ -364,6 +364,9 @@ public static class UblDocumentBuilder
                                 new
                                 {
                                     ID = V(MapTaxCategory(line.TaxCode)),
+                                    TaxExemptionReason = MapExemptionReason(line.TaxCode) != null
+                                        ? V(MapExemptionReason(line.TaxCode)!)
+                                        : (object?)null,
                                     TaxScheme = new[]
                                     {
                                         new
@@ -621,6 +624,16 @@ public static class UblDocumentBuilder
             _ => "01"
         };
     }
+
+    // CF366: TaxExemptionReason is mandatory when TaxCategory is exempt or zero-rated.
+    // Returns null for taxable categories so the field is omitted (WhenWritingNull serializer).
+    private static string? MapExemptionReason(string taxCode) =>
+        taxCode?.ToUpperInvariant() switch
+        {
+            "E" or "03" => "Exempt Supply",
+            "Z" or "02" => "Zero Rated Supply",
+            _ => null
+        };
 
     /// <summary>
     /// Convert a hex string (X509 serial number) to decimal string.
