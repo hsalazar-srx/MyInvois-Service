@@ -53,7 +53,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // BUG FIX (Sprint 7): was BETWEEN ? AND ? but only 1 param supplied — changed to >= ? (no upper bound for "pending")
         // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 — corrected after confirming 50=payment, 40=invoice in this installation
         // BUG FIX (Sprint 9): eptrcd=10 returned no data — confirmed via SYSCOLUMNS that this installation uses 40=invoice, 50=payment
-        // Country filter (idcscd <> 'MY') pending clarification: may need to include domestic suppliers — see Finance email thread
+        // Self-billed (AP) only applies to foreign suppliers — Malaysian vendors (idcscd='MY') are excluded.
         // AR: ESTRCD=10=invoice, ESTRCD=20=credit note. ESCUAM > 0 excludes reversal postings
         // (ESTRCD=10 with negative ESCUAM = accounting reversal entry, not a submittable document).
         var apWhere = "p.epacdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
@@ -92,7 +92,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
             if (invoiceType == "AP")
             {
-                var sql        = BuildApHeaderSql(schema, "TRIM(p.epsino) = ? AND p.eptrcd = 40");
+                var sql        = BuildApHeaderSql(schema, "TRIM(p.epsino) = ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
 
