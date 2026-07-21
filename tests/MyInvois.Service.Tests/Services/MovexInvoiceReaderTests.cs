@@ -629,4 +629,121 @@ public class MovexInvoiceReaderTests
         invoice.Supplier!.TIN.Should().Be("EI00000000030");
         invoice.Supplier.BRN.Should().Be("NA");
     }
+
+    #region TransCode derivation
+
+    [Fact]
+    public async Task GetPendingInvoices_ApInvoicePositiveAmount_SetsTransCodeToInvoice()
+    {
+        // AP query does epcuam*-1 so regular invoices (positive EPCUAM) arrive as positive.
+        // TransCode must be derived from sign since EPTRCD is not in the AP SELECT.
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "SUP001", InvoiceNo = "AP-INV-001",
+                    AccountingDate = 20260101, VoucherNumber = "V001",
+                    Currency = "USD", FxRate = 4.45m,
+                    InvoiceAmount = 1000m, GstAmount = 0m,
+                    InvoiceType = "AP", CompanyCode = "100"
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetSupplierDetailsAsync("SUP001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "SUP001", Name = "Supplier", CountryCode = "SG" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].TransCode.Should().Be("10", "positive AP amount → regular invoice");
+    }
+
+    [Fact]
+    public async Task GetPendingInvoices_ApCreditNoteNegativeAmount_SetsTransCodeToCreditNote()
+    {
+        // AP query does epcuam*-1 so credit notes (positive EPCUAM in FPLEDG) arrive negative.
+        // TransCode must be "20" so MyInvoisMapper emits LHDN type "12" (self-billed credit note).
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "SUP001", InvoiceNo = "AP-CN-001",
+                    AccountingDate = 20260101, VoucherNumber = "V002",
+                    Currency = "USD", FxRate = 4.45m,
+                    InvoiceAmount = -500m, GstAmount = 0m,
+                    InvoiceType = "AP", CompanyCode = "100"
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetSupplierDetailsAsync("SUP001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "SUP001", Name = "Supplier", CountryCode = "SG" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].TransCode.Should().Be("20", "negative AP amount → credit note");
+    }
+
+    [Fact]
+    public async Task GetPendingInvoices_ArInvoice_PropagatesTransCodeFromEstrcd()
+    {
+        // FSLEDG.ESTRCD="10" for AR invoices. TransCode is read directly from the DB column.
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "CUS001", InvoiceNo = "AR-INV-001",
+                    AccountingDate = 20260101, InvoiceDate = 20260101,
+                    VoucherNumber = "V010", Currency = "MYR", FxRate = 1.0m,
+                    InvoiceAmount = 1060m, GstAmount = 60m,
+                    InvoiceType = "AR", CompanyCode = "100",
+                    TransCode = "10"
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetCustomerDetailsAsync("CUS001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "CUS001", Name = "Customer", CountryCode = "MY" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].TransCode.Should().Be("10", "AR invoice: TransCode propagated from FSLEDG.ESTRCD");
+    }
+
+    [Fact]
+    public async Task GetPendingInvoices_ArCreditNote_PropagatesTransCodeFromEstrcd()
+    {
+        // FSLEDG.ESTRCD="20" for AR credit notes. ESCUAM is still positive — only ESTRCD signals
+        // credit direction. TransCode must flow through unchanged to produce LHDN type "02".
+        var fromDate = new DateTime(2026, 1, 1);
+        _dataSourceMock
+            .Setup(x => x.GetPendingInvoicesAsync(fromDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RawInvoiceRecord>
+            {
+                new()
+                {
+                    PartyId = "CUS001", InvoiceNo = "AR-CN-001",
+                    AccountingDate = 20260101, InvoiceDate = 20260101,
+                    VoucherNumber = "V011", Currency = "MYR", FxRate = 1.0m,
+                    InvoiceAmount = 530m, GstAmount = 30m,
+                    InvoiceType = "AR", CompanyCode = "100",
+                    TransCode = "20"
+                }
+            });
+        _partyProviderMock
+            .Setup(x => x.GetCustomerDetailsAsync("CUS001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PartyDetails { PartyId = "CUS001", Name = "Customer", CountryCode = "MY" });
+
+        var result = await _sut.GetPendingInvoices(fromDate);
+
+        result[0].TransCode.Should().Be("20", "AR credit note: TransCode propagated from FSLEDG.ESTRCD");
+    }
+
+    #endregion
 }

@@ -104,6 +104,11 @@ public class InvoicesController(
             ? (r.CustomerName ?? r.InvoiceeName ?? r.PartyId)
             : r.PartyId;
 
+        // AR credit notes (ESTRCD=20) carry positive ESCUAM in FSLEDG — the sign is conveyed
+        // by the transaction code, not the amount. Negate here so the portal's totalInclTax < 0
+        // convention works identically for AR-CN and AP-CN (AP query already does epcuam * -1).
+        var sign = (r.InvoiceType == "AR" && r.TransCode == "20") ? -1m : 1m;
+
         return new InvoiceSummaryDto
         {
             InvoiceNo     = r.InvoiceNo.Trim(),
@@ -112,9 +117,9 @@ public class InvoicesController(
             CompanyCode   = r.CompanyCode,
             PartyName     = partyName?.Trim() ?? string.Empty,
             Currency      = r.Currency.Trim(),
-            AmountExclTax = r.InvoiceAmount - r.GstAmount,
-            TaxAmount     = r.GstAmount,
-            TotalInclTax  = r.InvoiceAmount,
+            AmountExclTax = (r.InvoiceAmount - r.GstAmount) * sign,
+            TaxAmount     = r.GstAmount * sign,
+            TotalInclTax  = r.InvoiceAmount * sign,
         };
     }
 }

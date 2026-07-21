@@ -128,6 +128,19 @@ public class MyInvoisMapperTests
     }
 
     [Fact]
+    public void Transform_SalesCreditNote_SetsDocumentTypeCode02()
+    {
+        // AR credit notes must use LHDN type "02" (Credit Note).
+        // TransCode="20" flows from FSLEDG.ESTRCD via MovexInvoiceReader.
+        var invoice = CreateValidMovexSalesInvoice();
+        invoice.TransCode = "20";
+
+        var result = _sut.Transform(invoice);
+
+        result.DocumentTypeCode.Should().Be("02");
+    }
+
+    [Fact]
     public void Transform_SalesInvoice_MapsBuyerAsCustomer()
     {
         // Arrange
@@ -192,6 +205,19 @@ public class MyInvoisMapperTests
         var result = _sut.Transform(CreateValidMovexPurchaseInvoice());
 
         result.DocumentTypeCode.Should().Be("11");
+    }
+
+    [Fact]
+    public void Transform_PurchaseCreditNote_SetsDocumentTypeCode12()
+    {
+        // AP credit notes must use LHDN type "12" (Self-Billed Credit Note).
+        // TransCode="20" is derived from negative InvoiceAmount in MovexInvoiceReader.
+        var invoice = CreateValidMovexPurchaseInvoice();
+        invoice.TransCode = "20";
+
+        var result = _sut.Transform(invoice);
+
+        result.DocumentTypeCode.Should().Be("12");
     }
 
     [Fact]
