@@ -138,7 +138,13 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             InvoiceNumber = raw.InvoiceNo,
             InvoiceDate = invoiceDate,
             InvoiceType = raw.InvoiceType == "AP" ? "Purchase" : "Sales",
-            TransCode = raw.TransCode,
+            // AR: TransCode from FSLEDG.ESTRCD ("10"=invoice, "20"=credit note) — amount sign
+            //     is positive for both, so ESTRCD is the only reliable signal.
+            // AP: EPTRCD not in AP query; derive from InvoiceAmount sign instead.
+            //     AP query does epcuam*-1 → credit notes (positive EPCUAM) arrive negative.
+            TransCode = raw.InvoiceType == "AP"
+                ? (raw.InvoiceAmount < 0m ? "20" : "10")
+                : raw.TransCode,
             CurrencyCode = raw.Currency.Trim(),
             ExchangeRate = fxRate,
             TotalInclTax = raw.InvoiceAmount,

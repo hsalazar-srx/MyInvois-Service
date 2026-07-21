@@ -54,8 +54,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 — corrected after confirming 50=payment, 40=invoice in this installation
         // BUG FIX (Sprint 9): eptrcd=10 returned no data — confirmed via SYSCOLUMNS that this installation uses 40=invoice, 50=payment
         // Self-billed (AP) only applies to foreign suppliers — Malaysian vendors (idcscd='MY') are excluded.
-        // AR: ESTRCD=10=invoice, ESTRCD=20=credit note. ESCUAM > 0 excludes reversal postings
-        // (ESTRCD=10 with negative ESCUAM = accounting reversal entry, not a submittable document).
+        // AR: ESCUAM > 0 applies to both ESTRCD=10 (invoice) and ESTRCD=20 (credit note).
+        // In FSLEDG, credit note sign is conveyed by ESTRCD, not by ESCUAM. ESCUAM < 0
+        // means a reversal of either type — excluded in both cases.
         var apWhere = "p.epacdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
         var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
@@ -149,7 +150,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 40: Supplier Invoice in this installation (confirmed: 40=invoice, 50=payment)
-        // AR: ESTRCD IN (10,20) fetches both invoices and credit notes. ESCUAM > 0 excludes reversal postings.
+        // AR: ESCUAM > 0 excludes reversals for both ESTRCD=10 (invoice) and ESTRCD=20 (credit note).
         var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
         var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
