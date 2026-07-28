@@ -233,16 +233,29 @@ public sealed class MovexLineItemFetcher
     /// Build SQL for AP line items from FGINLI + MPLINE.
     /// FGINLI: line-level qty/price/net amount and VAT code.
     /// MPLINE: item number, description, and U/M via PO reference.
-    /// FGINAE: AP invoices are zero-rated for Malaysian SST — TaxAmount is always 0.
+    /// TaxAmount is always 0 (all AP invoices are zero-rated for Malaysian SST).
+    ///
+    /// Cross-year deduplication: FGINLI can have two rows for the same (SUNO, SINO, PUNO, PNLI)
+    /// when a year-end invoice is entered in one fiscal year but the GL voucher posts in the next
+    /// (F5INYR differs from EPYEA4 in FPLEDG). The CTE keeps only the most-recent-year row per
+    /// PO line to eliminate the duplicate that caused PINSHENG-PS-20260718037 to submit 3 lines.
     ///
     /// Validated against: src/Database/FGINLI_FGINAE_AP_LineItems_Validation.sql (Query 0e)
     /// </summary>
     private static string BuildApLineItemsSql(string schema, int batchSize)
     {
-        // AP invoices matched by (SUNO, SINO) only — INYR in FGINLI can differ from
-        // the GL voucher year in FPLEDG (e.g. invoice entered in Dec but voucher posted Jan).
         var valueTuples = string.Join(",", Enumerable.Range(0, batchSize).Select(_ => "(?, ?)"));
-        return $@"SELECT
+        return $@"WITH dedup AS (
+            SELECT li.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY li.F5SUNO, li.F5SINO, TRIM(li.F5PUNO), li.F5PNLI
+                       ORDER BY li.F5INYR DESC
+                   ) AS rn_dedup
+            FROM {schema}.FGINLI li
+            WHERE li.F5CONO = ? AND li.F5DIVI = 'L'
+              AND (TRIM(li.F5SUNO), TRIM(li.F5SINO)) IN (VALUES {valueTuples})
+        )
+        SELECT
             TRIM(li.F5SUNO) AS SupplierId,
             TRIM(li.F5SINO) AS SupplierInvoiceNo,
             li.F5INYR AS InvoiceYear,
@@ -261,19 +274,11 @@ public sealed class MovexLineItemFetcher
             END, 4) AS UnitPrice,
             li.F5IVNA AS LineTotal,
             COALESCE(TRIM(li.F5VTCD), '') AS TaxCode,
-            COALESCE(vat.VatAmount, 0) AS TaxAmount
-        FROM {schema}.FGINLI li
+            0 AS TaxAmount
+        FROM dedup li
         LEFT JOIN {schema}.MPLINE po
             ON li.F5CONO = po.IBCONO AND li.F5PUNO = po.IBPUNO AND li.F5PNLI = po.IBPNLI
-        LEFT JOIN LATERAL (
-            -- All EPTRCD=10 AP invoices are zero-rated for Malaysian SST (confirmed 2026-05-14):
-            -- FPLEDG.EPVTAM = 0 on every supplier invoice row. FGINAE contains no VAT entry
-            -- type rows (F9INIT=12) for EPTRCD=10 invoices — only goods cost (10), freight (11),
-            -- and variance (18) entries exist. TaxAmount is always 0 for this transaction scope.
-            SELECT 0 AS VatAmount FROM SYSIBM.SYSDUMMY1
-        ) vat ON 1=1
-        WHERE li.F5CONO = ? AND li.F5DIVI = 'L'
-          AND (li.F5SUNO, li.F5SINO) IN (VALUES {valueTuples})
+        WHERE li.rn_dedup = 1
         ORDER BY li.F5SUNO, li.F5SINO, li.F5PUNO, li.F5PNLI";
     }
 }
