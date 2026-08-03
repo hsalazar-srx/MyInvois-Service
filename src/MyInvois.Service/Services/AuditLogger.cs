@@ -27,6 +27,15 @@ public interface IAuditLogger
 
     /// <summary>Check if an invoice was already submitted successfully (duplicate detection).</summary>
     Task<bool> IsInvoiceAlreadySubmitted(string invoiceNumber, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Update the audit record with the LHDN Step 8 async validation outcome.
+    /// Called after polling GetDocumentDetails ~5 minutes after batch submission.
+    /// "Valid"    → leave Status="Success", update MyInvoisStatus="Valid"
+    /// "Invalid"  → set Status="Failed", MyInvoisStatus="Invalid" — allows retry after user fixes invoice
+    /// other      → update MyInvoisStatus only, leave Status unchanged
+    /// </summary>
+    Task UpdateStep8Status(string invoiceNumber, string uuid, string lhdnStatus, string? errorDetail, CancellationToken cancellationToken = default);
 }
 
 public class AuditLogger : IAuditLogger
@@ -164,6 +173,53 @@ public class AuditLogger : IAuditLogger
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to query failed submissions");
+            throw;
+        }
+    }
+
+    public async Task UpdateStep8Status(string invoiceNumber, string uuid, string lhdnStatus, string? errorDetail, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation(
+            "Updating Step 8 status for invoice {InvoiceNumber} (UUID: {UUID}): {LhdnStatus}",
+            invoiceNumber, uuid, lhdnStatus);
+
+        try
+        {
+            using var ctx = _contextFactory.CreateDbContext();
+
+            var entity = await ctx.AuditLogs
+                .Where(x => x.MyInvoisUUID == uuid && x.InvoiceNumber == invoiceNumber)
+                .OrderByDescending(x => x.Timestamp)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (entity == null)
+            {
+                _logger.LogWarning(
+                    "No audit record found for invoice {InvoiceNumber} UUID {UUID} — Step 8 status not recorded.",
+                    invoiceNumber, uuid);
+                return;
+            }
+
+            entity.MyInvoisStatus = lhdnStatus;
+
+            if (lhdnStatus == "Invalid")
+            {
+                entity.Status       = "Failed";
+                entity.ErrorMessage = errorDetail ?? "LHDN Step 8 async validation rejected the document.";
+                entity.Severity     = "Error";
+            }
+
+            await ctx.SaveChangesAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "Step 8 status updated for invoice {InvoiceNumber}: MyInvoisStatus={LhdnStatus}, Status={Status}",
+                invoiceNumber, lhdnStatus, entity.Status);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to update Step 8 status for invoice {InvoiceNumber} UUID {UUID}",
+                invoiceNumber, uuid);
             throw;
         }
     }

@@ -112,8 +112,9 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
                 }
                 else
                 {
-                    result.Status        = "Success";
-                    result.MyInvoisUUID  = accepted?.Uuid ?? parsed?.SubmissionUid ?? string.Empty;
+                    result.Status          = "Success";
+                    result.MyInvoisUUID    = accepted?.Uuid ?? parsed?.SubmissionUid ?? string.Empty;
+                    result.MyInvoisStatus  = "Submitted"; // Step 8 async validation pending — polled after batch
 
                     _logger.LogInformation(
                         "Invoice {InvoiceNumber} submitted successfully. UUID: {UUID}",
@@ -275,7 +276,9 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
     private static bool IsRetriable(HttpStatusCode code) =>
         code is HttpStatusCode.TooManyRequests
              or HttpStatusCode.InternalServerError
-             or HttpStatusCode.ServiceUnavailable;
+             or HttpStatusCode.ServiceUnavailable
+             or HttpStatusCode.BadGateway      // 502 — LHDN Azure App Proxy transient error
+             or HttpStatusCode.GatewayTimeout; // 504 — LHDN upstream timeout
 
     private static string ParseErrorCode(string content)
     {

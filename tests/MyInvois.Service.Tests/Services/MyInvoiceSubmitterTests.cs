@@ -528,6 +528,113 @@ public class MyInvoiceSubmitterTests
         result.ErrorMessage.Should().Contain("does not exist in LHDN registry"); // detail message included
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway, "502")]
+    [InlineData(HttpStatusCode.GatewayTimeout, "504")]
+    public async Task Submit_GatewayError_RetriesAndSucceedsOnSecondAttempt(HttpStatusCode gatewayCode, string _label)
+    {
+        // 502/504 are LHDN Azure App Proxy transient errors — Polly must retry them.
+        var document = CreateValidMyInvoiceDocument();
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
+        var submissionResponse = new
+        {
+            submissionUid = "SUB-GATEWAY-RETRY",
+            acceptedDocuments = new[]
+            {
+                new { uuid = "12345678-1234-1234-1234-aabbccddeeff", invoiceCodeNumber = document.InvoiceNumber }
+            },
+            rejectedDocuments = Array.Empty<object>()
+        };
+
+        var callCount = 0;
+        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(() =>
+            {
+                callCount++;
+                return callCount == 1
+                    ? new HttpResponseMessage { StatusCode = gatewayCode }
+                    : new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(submissionResponse) };
+            });
+
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
+
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+        var sut = new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            tokenService, _loggerMock.Object,
+            retrySleepProvider: _ => TimeSpan.Zero);
+
+        var result = await sut.Submit(document);
+
+        result.Status.Should().Be("Success");
+        result.MyInvoisUUID.Should().Be("12345678-1234-1234-1234-aabbccddeeff");
+
+        // 1 initial + 1 retry = 2 total submission calls
+        httpMessageHandlerMock.Protected().Verify(
+            "SendAsync", Times.Exactly(2),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.GatewayTimeout)]
+    public async Task Submit_GatewayError_ExhaustsAllRetriesAndReturnsFailed(HttpStatusCode gatewayCode)
+    {
+        // Sustained 502/504 — Polly exhausts all 3 retries then returns Failed.
+        var document = CreateValidMyInvoiceDocument();
+        var tokenResponse = new { access_token = "valid-token", token_type = "Bearer", expires_in = 3600 };
+
+        var httpMessageHandlerMock = new Mock<HttpMessageHandler>();
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/connect/token")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = HttpStatusCode.OK, Content = JsonContent.Create(tokenResponse) });
+
+        httpMessageHandlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage { StatusCode = gatewayCode });
+
+        var httpClient = new HttpClient(httpMessageHandlerMock.Object) { BaseAddress = new Uri(_apiSettings.BaseUrl) };
+        _httpClientFactoryMock.Setup(f => f.CreateClient("MyInvois")).Returns(httpClient);
+
+        var tokenService = new MyInvoisTokenService(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            new Mock<ILogger<MyInvoisTokenService>>().Object);
+        var sut = new MyInvoiceSubmitter(
+            _httpClientFactoryMock.Object, Options.Create(_apiSettings),
+            tokenService, _loggerMock.Object,
+            retrySleepProvider: _ => TimeSpan.Zero);
+
+        var result = await sut.Submit(document);
+
+        result.Status.Should().Be("Failed");
+
+        // 1 initial + 3 retries = 4 total submission calls
+        httpMessageHandlerMock.Protected().Verify(
+            "SendAsync", Times.Exactly(4),
+            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/documentsubmissions")),
+            ItExpr.IsAny<CancellationToken>());
+    }
+
     [Fact]
     public async Task Submit_Http200WithRejectedDocuments_NoRetryAttempted()
     {
