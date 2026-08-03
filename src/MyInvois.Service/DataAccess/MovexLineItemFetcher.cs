@@ -226,6 +226,7 @@ public sealed class MovexLineItemFetcher
             AND dl.UBPOSX = ol.OBPOSX
         WHERE f.ESCONO = ?
           AND (TRIM(f.ESCINO), f.ESVONO) IN (VALUES {valueTuples})
+          AND TRIM(f.ESTRCD) IN ('10', '20')
         ORDER BY f.ESCINO, dl.UBPONR, dl.UBPOSX";
     }
 

@@ -34,7 +34,16 @@ public class InvoiceProcessorTests
             _mapperMock.Object,
             _submitterMock.Object,
             _auditLoggerMock.Object,
-            _loggerMock.Object);
+            _loggerMock.Object)
+        {
+            // Skip the 5-minute wait in all unit tests
+            Step8PollingDelay = TimeSpan.Zero
+        };
+
+        // Default Step 8 poll: return "Valid" for any UUID so existing tests don't need to change
+        _submitterMock
+            .Setup(s => s.GetSubmissionStatus(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("Valid");
     }
 
     #region Constructor Tests
@@ -393,6 +402,116 @@ public class InvoiceProcessorTests
         _submitterMock.Verify(
             s => s.Submit(It.IsAny<MyInvoiceDocument>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    #endregion
+
+    #region Step 8 Polling Tests
+
+    [Fact]
+    public async Task ProcessDateRangeBatch_Step8Valid_UpdatesAuditWithValidStatus()
+    {
+        // Step 8 returns "Valid" — audit record should be updated, Status stays "Success"
+        var invoices = CreateTestInvoices(1);
+        SetupReaderReturns(invoices);
+        SetupMapperTransformsSuccessfully();
+        SetupMapperValidatesSuccessfully();
+        SetupAuditLoggerNoDuplicates();
+
+        _submitterMock
+            .Setup(s => s.Submit(It.IsAny<MyInvoiceDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-valid-001" });
+
+        _submitterMock
+            .Setup(s => s.GetSubmissionStatus("uuid-valid-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync("Valid");
+
+        await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
+
+        _auditLoggerMock.Verify(a =>
+            a.UpdateStep8Status("INV-001", "uuid-valid-001", "Valid", null, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessDateRangeBatch_Step8Invalid_UpdatesAuditWithFailedStatus()
+    {
+        // Step 8 returns "Invalid" — audit record flagged as Failed so user can fix and resubmit
+        var invoices = CreateTestInvoices(1);
+        SetupReaderReturns(invoices);
+        SetupMapperTransformsSuccessfully();
+        SetupMapperValidatesSuccessfully();
+        SetupAuditLoggerNoDuplicates();
+
+        _submitterMock
+            .Setup(s => s.Submit(It.IsAny<MyInvoiceDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-invalid-001" });
+
+        _submitterMock
+            .Setup(s => s.GetSubmissionStatus("uuid-invalid-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync("Invalid");
+
+        await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
+
+        _auditLoggerMock.Verify(a =>
+            a.UpdateStep8Status(
+                "INV-001", "uuid-invalid-001", "Invalid",
+                It.Is<string>(msg => msg != null && msg.Contains("LHDN portal")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessDateRangeBatch_Step8StillSubmitted_DoesNotUpdateAudit()
+    {
+        // Step 8 returns "Submitted" (still processing) — do not touch the audit record
+        var invoices = CreateTestInvoices(1);
+        SetupReaderReturns(invoices);
+        SetupMapperTransformsSuccessfully();
+        SetupMapperValidatesSuccessfully();
+        SetupAuditLoggerNoDuplicates();
+
+        _submitterMock
+            .Setup(s => s.Submit(It.IsAny<MyInvoiceDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-pending-001" });
+
+        _submitterMock
+            .Setup(s => s.GetSubmissionStatus("uuid-pending-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync("Submitted");
+
+        await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
+
+        // "Submitted" means still processing — UpdateStep8Status IS called (we record the status)
+        // but the audit logger itself decides not to change Status for non-Invalid results
+        _auditLoggerMock.Verify(a =>
+            a.UpdateStep8Status("INV-001", "uuid-pending-001", "Submitted", null, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessDateRangeBatch_FailedInvoices_NotPolledForStep8()
+    {
+        // Only accepted (Status="Success") invoices are polled — failures have no UUID
+        var invoices = CreateTestInvoices(2);
+        SetupReaderReturns(invoices);
+        SetupMapperTransformsSuccessfully();
+        SetupMapperValidatesSuccessfully();
+        SetupAuditLoggerNoDuplicates();
+
+        _submitterMock
+            .SetupSequence(s => s.Submit(It.IsAny<MyInvoiceDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Failed", ErrorCode = "DS302" })
+            .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-002", Status = "Success", MyInvoisUUID = "uuid-002" });
+
+        await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
+
+        // Only INV-002 (Success with UUID) should be polled
+        _submitterMock.Verify(s =>
+            s.GetSubmissionStatus(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _auditLoggerMock.Verify(a =>
+            a.UpdateStep8Status("INV-002", "uuid-002", It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     #endregion

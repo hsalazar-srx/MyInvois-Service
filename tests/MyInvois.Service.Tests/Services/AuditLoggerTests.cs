@@ -276,6 +276,92 @@ public class AuditLoggerTests : IDisposable
     }
 
     #endregion
+
+    #region UpdateStep8Status Tests
+
+    [Fact]
+    public async Task UpdateStep8Status_Valid_UpdatesMyInvoisStatusLeavesStatusSuccess()
+    {
+        // Arrange — seed a Success audit row
+        using (var ctx = NewCtx())
+        {
+            ctx.AuditLogs.Add(new AuditLogEntity
+            {
+                Action = "MyInvois_Submit", Category = "Integration", Severity = "Info",
+                ResourceType = "Invoice", ResourceId = "INV-S8-001",
+                Status = "Success", InvoiceNumber = "INV-S8-001",
+                MyInvoisUUID = "uuid-s8-001", MyInvoisStatus = "Submitted"
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        await _sut.UpdateStep8Status("INV-S8-001", "uuid-s8-001", "Valid", null);
+
+        using var assertCtx = NewCtx();
+        var entry = await assertCtx.AuditLogs.SingleAsync();
+        entry.MyInvoisStatus.Should().Be("Valid");
+        entry.Status.Should().Be("Success");   // Status unchanged for Valid
+        entry.Severity.Should().Be("Info");
+    }
+
+    [Fact]
+    public async Task UpdateStep8Status_Invalid_SetsStatusFailedAndErrorMessage()
+    {
+        // Arrange
+        using (var ctx = NewCtx())
+        {
+            ctx.AuditLogs.Add(new AuditLogEntity
+            {
+                Action = "MyInvois_Submit", Category = "Integration", Severity = "Info",
+                ResourceType = "Invoice", ResourceId = "INV-S8-002",
+                Status = "Success", InvoiceNumber = "INV-S8-002",
+                MyInvoisUUID = "uuid-s8-002", MyInvoisStatus = "Submitted"
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        await _sut.UpdateStep8Status("INV-S8-002", "uuid-s8-002", "Invalid", "CV303: item code not active");
+
+        using var assertCtx = NewCtx();
+        var entry = await assertCtx.AuditLogs.SingleAsync();
+        entry.MyInvoisStatus.Should().Be("Invalid");
+        entry.Status.Should().Be("Failed");          // Downgraded so retry is allowed
+        entry.Severity.Should().Be("Error");
+        entry.ErrorMessage.Should().Contain("CV303");
+    }
+
+    [Fact]
+    public async Task UpdateStep8Status_Invalid_AllowsResubmission()
+    {
+        // An invoice that was Valid at Step 4 but Invalid at Step 8 must be retryable
+        using (var ctx = NewCtx())
+        {
+            ctx.AuditLogs.Add(new AuditLogEntity
+            {
+                Action = "MyInvois_Submit", Category = "Integration", Severity = "Info",
+                ResourceType = "Invoice", ResourceId = "INV-S8-003",
+                Status = "Success", InvoiceNumber = "INV-S8-003",
+                MyInvoisUUID = "uuid-s8-003"
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        await _sut.UpdateStep8Status("INV-S8-003", "uuid-s8-003", "Invalid", "rejected");
+
+        // IsInvoiceAlreadySubmitted checks Status == "Success" — must now return false
+        var alreadySubmitted = await _sut.IsInvoiceAlreadySubmitted("INV-S8-003");
+        alreadySubmitted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UpdateStep8Status_NoMatchingRecord_LogsWarningAndDoesNotThrow()
+    {
+        // If the audit row can't be found (e.g. UUID mismatch), it must not throw
+        var act = async () => await _sut.UpdateStep8Status("INV-MISSING", "uuid-missing", "Valid", null);
+        await act.Should().NotThrowAsync();
+    }
+
+    #endregion
 }
 
 /// <summary>

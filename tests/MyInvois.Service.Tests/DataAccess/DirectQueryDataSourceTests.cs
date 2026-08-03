@@ -106,4 +106,69 @@ public class DirectQueryDataSourceTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             sut.GetInvoiceByIdAsync("INV001", invalidType));
     }
+
+    // ── DeduplicateArRecords regression tests ────────────────────────────────
+    // These protect against regressions in the M3 cash-receipt clearing dedup logic.
+    // Real-world case: FSLEDG for invoice 009713132 had ESTRCD=10 (ESCUAM=-98.04)
+    // and ESTRCD=20 (ESCUAM=+98.04) for the same ESCINO — the ESTRCD=20 row was
+    // being submitted as a credit note to LHDN before this fix.
+
+    [Fact]
+    public void DeduplicateArRecords_PairedInvoiceAndClearingEntry_RemovesClearingEntry()
+    {
+        // Invoice with cash-receipt allocation: ESTRCD=10 (ESCUAM<0) + ESTRCD=20 offset on same ESCINO.
+        var records = new List<RawInvoiceRecord>
+        {
+            new() { InvoiceNo = "009713132", TransCode = "10", InvoiceAmount = -98.04m },
+            new() { InvoiceNo = "009713132", TransCode = "20", InvoiceAmount =  98.04m },
+        };
+
+        var result = DirectQueryDataSource.DeduplicateArRecords(records);
+
+        result.Should().HaveCount(1);
+        result[0].TransCode.Should().Be("10");
+        result[0].InvoiceAmount.Should().Be(-98.04m);
+    }
+
+    [Fact]
+    public void DeduplicateArRecords_StandaloneCreditNote_IsPreserved()
+    {
+        // A credit note with no matching ESTRCD=10 row must be kept — it is a genuine credit note.
+        var records = new List<RawInvoiceRecord>
+        {
+            new() { InvoiceNo = "CN001", TransCode = "20", InvoiceAmount = 500m },
+        };
+
+        var result = DirectQueryDataSource.DeduplicateArRecords(records);
+
+        result.Should().HaveCount(1);
+        result[0].TransCode.Should().Be("20");
+    }
+
+    [Fact]
+    public void DeduplicateArRecords_MultipleInvoicesOneMixed_OnlyRemovesMatchingClearingEntry()
+    {
+        var records = new List<RawInvoiceRecord>
+        {
+            new() { InvoiceNo = "INV-A", TransCode = "10", InvoiceAmount =  1000m },
+            new() { InvoiceNo = "INV-A", TransCode = "20", InvoiceAmount = -1000m }, // paired — must be removed
+            new() { InvoiceNo = "INV-B", TransCode = "10", InvoiceAmount =   500m },
+            new() { InvoiceNo = "CN-C",  TransCode = "20", InvoiceAmount =   200m }, // standalone — must be kept
+        };
+
+        var result = DirectQueryDataSource.DeduplicateArRecords(records);
+
+        result.Should().HaveCount(3);
+        result.Should().ContainSingle(r => r.InvoiceNo == "INV-A" && r.TransCode == "10");
+        result.Should().ContainSingle(r => r.InvoiceNo == "INV-B");
+        result.Should().ContainSingle(r => r.InvoiceNo == "CN-C");
+        result.Should().NotContain(r => r.InvoiceNo == "INV-A" && r.TransCode == "20");
+    }
+
+    [Fact]
+    public void DeduplicateArRecords_EmptyList_ReturnsEmpty()
+    {
+        var result = DirectQueryDataSource.DeduplicateArRecords(new List<RawInvoiceRecord>());
+        result.Should().BeEmpty();
+    }
 }

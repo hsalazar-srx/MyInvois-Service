@@ -54,11 +54,13 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // BUG FIX (Sprint 8): eptrcd was incorrectly set to 50 — corrected after confirming 50=payment, 40=invoice in this installation
         // BUG FIX (Sprint 9): eptrcd=10 returned no data — confirmed via SYSCOLUMNS that this installation uses 40=invoice, 50=payment
         // Self-billed (AP) only applies to foreign suppliers — Malaysian vendors (idcscd='MY') are excluded.
-        // AR: ESCUAM > 0 applies to both ESTRCD=10 (invoice) and ESTRCD=20 (credit note).
-        // In FSLEDG, credit note sign is conveyed by ESTRCD, not by ESCUAM. ESCUAM < 0
-        // means a reversal of either type — excluded in both cases.
+        // AR: ESCUAM <> 0 excludes zero-amount correction entries only. ESCUAM can be negative for
+        // genuine invoices when M3 posts a cash-receipt allocation against them — the previous > 0
+        // guard excluded those invoices incorrectly. ESTRCD is the authoritative document type indicator.
+        // DeduplicateArRecords (called in QueryAllCompaniesAsync) removes ESTRCD=20 clearing entries
+        // that share an ESCINO with an ESTRCD=10 invoice (M3 cash-receipt offsets, not real credit notes).
         var apWhere = "p.epacdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
-        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM <> 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -111,7 +113,7 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ?");
+                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM <> 0 AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
@@ -150,9 +152,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 40: Supplier Invoice in this installation (confirmed: 40=invoice, 50=payment)
-        // AR: ESCUAM > 0 excludes reversals for both ESTRCD=10 (invoice) and ESTRCD=20 (credit note).
+        // AR: ESCUAM <> 0 — see GetPendingInvoicesAsync comment for full explanation.
         var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
-        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM > 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM <> 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -171,6 +173,25 @@ public class DirectQueryDataSource : IInvoiceDataSource
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Removes ESTRCD=20 (credit-note) rows that share an ESCINO with an ESTRCD=10 (invoice) row.
+    /// These are M3 cash-receipt clearing offsets, not standalone credit notes. When M3 partially
+    /// applies a payment, it posts a positive ESTRCD=20 row to offset the negative ESCUAM on the
+    /// ESTRCD=10 row — both share the same ESCINO. Submitting the ESTRCD=20 row as a credit note
+    /// to LHDN is incorrect; only the original ESTRCD=10 invoice should be submitted.
+    /// </summary>
+    internal static List<RawInvoiceRecord> DeduplicateArRecords(List<RawInvoiceRecord> arRecords)
+    {
+        var invoiceNumbers = arRecords
+            .Where(r => r.TransCode == "10")
+            .Select(r => r.InvoiceNo)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return arRecords
+            .Where(r => r.TransCode != "20" || !invoiceNumbers.Contains(r.InvoiceNo))
+            .ToList();
+    }
 
     private string GetSchemaForCompany(string companyCode)
     {
@@ -226,15 +247,23 @@ public class DirectQueryDataSource : IInvoiceDataSource
                     r.CompanyCode = companyCode;
                 }
 
-                var companyRecords = apRecords.Concat(arRecords).ToList();
+                var dedupedArRecords = DeduplicateArRecords(arRecords);
+                var companyRecords   = apRecords.Concat(dedupedArRecords).ToList();
 
                 if (companyRecords.Count > 0)
                     await _lineItemFetcher.FetchAndAttachAsync(connection, schema, companyRecords, cancellationToken);
 
                 allRecords.AddRange(companyRecords);
 
+                var removedCount = arRecords.Count - dedupedArRecords.Count;
+                if (removedCount > 0)
+                    _logger.LogInformation(
+                        "Company {CompanyCode}: removed {RemovedCount} ESTRCD=20 clearing entries " +
+                        "that had a paired ESTRCD=10 invoice (M3 cash-receipt offsets).",
+                        companyCode, removedCount);
+
                 _logger.LogInformation("Company {CompanyCode}: {ApCount} AP + {ArCount} AR invoices fetched",
-                    companyCode, apRecords.Count, arRecords.Count);
+                    companyCode, apRecords.Count, dedupedArRecords.Count);
             }
             catch (OdbcException ex)
             {
