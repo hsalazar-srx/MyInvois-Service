@@ -56,11 +56,11 @@ public class DirectQueryDataSource : IInvoiceDataSource
         // Self-billed (AP) only applies to foreign suppliers — Malaysian vendors (idcscd='MY') are excluded.
         // AR: ESCUAM <> 0 excludes zero-amount correction entries only. ESCUAM can be negative for
         // genuine invoices when M3 posts a cash-receipt allocation against them — the previous > 0
-        // guard excluded those invoices incorrectly. ESTRCD is the authoritative document type indicator.
-        // DeduplicateArRecords (called in QueryAllCompaniesAsync) removes ESTRCD=20 clearing entries
-        // that share an ESCINO with an ESTRCD=10 invoice (M3 cash-receipt offsets, not real credit notes).
+        // guard excluded those invoices incorrectly.
+        // ADR-019: ESTRCD = 10 only. ESTRCD=20 is AR's settlement/payment code (the analogue of AP's
+        // eptrcd=50), NOT a credit-note code — profiling found zero standalone ESTRCD=20 rows.
         var apWhere = "p.epacdt >= ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
-        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM <> 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT >= ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCUAM <> 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -69,9 +69,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
         arParams.Add("p0", ToMovexDate(fromDate));
         arParams.Add("p1", _settings.ArDivision);
         arParams.Add("p2", _settings.ArTransCode);
-        arParams.Add("p3", _settings.ArCreditNoteTransCode);
-        arParams.Add("p4", _settings.ArCustomerStatus);
-        arParams.Add("p5", _settings.ArMinYear);
+        arParams.Add("p3", _settings.ArCustomerStatus);
+        arParams.Add("p4", _settings.ArMinYear);
 
         return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
@@ -113,13 +112,13 @@ public class DirectQueryDataSource : IInvoiceDataSource
             }
             else
             {
-                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM <> 0 AND o.OKSTAT = ?");
+                // ADR-019: ESTRCD = 10 only — ESTRCD=20 is a settlement posting, not a credit note.
+                var sql        = BuildArHeaderSql(schema, "TRIM(f.ESCINO) = ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCUAM <> 0 AND o.OKSTAT = ?");
                 var parameters = new DynamicParameters();
                 parameters.Add("p0", invoiceNumber);
                 parameters.Add("p1", _settings.ArDivision);
                 parameters.Add("p2", _settings.ArTransCode);
-                parameters.Add("p3", _settings.ArCreditNoteTransCode);
-                parameters.Add("p4", _settings.ArCustomerStatus);
+                parameters.Add("p3", _settings.ArCustomerStatus);
 
                 record = (await connection.QueryAsync<RawInvoiceRecord>(
                     new CommandDefinition(sql, parameters,
@@ -152,9 +151,9 @@ public class DirectQueryDataSource : IInvoiceDataSource
 
         // DB2 i5/OS requires positional parameters (?) not named parameters (@)
         // eptrcd = 40: Supplier Invoice in this installation (confirmed: 40=invoice, 50=payment)
-        // AR: ESCUAM <> 0 — see GetPendingInvoicesAsync comment for full explanation.
+        // AR: ESCUAM <> 0 and ESTRCD = 10 only — see GetPendingInvoicesAsync comment (ADR-019).
         var apWhere = "p.epacdt BETWEEN ? AND ? AND p.eptrcd = 40 AND p.epdivi = 'L' AND (s.idcscd IS NULL OR TRIM(s.idcscd) <> 'MY')";
-        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD IN (?,?) AND f.ESCUAM <> 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
+        var arWhere = "f.ESRGDT BETWEEN ? AND ? AND f.ESDIVI = ? AND f.ESTRCD = ? AND f.ESCUAM <> 0 AND o.OKSTAT = ? AND f.ESYEA4 > ?";
 
         var apParams = new DynamicParameters();
         apParams.Add("p0", ToMovexDate(fromDate));
@@ -165,9 +164,8 @@ public class DirectQueryDataSource : IInvoiceDataSource
         arParams.Add("p1", ToMovexDate(toDate));
         arParams.Add("p2", _settings.ArDivision);
         arParams.Add("p3", _settings.ArTransCode);
-        arParams.Add("p4", _settings.ArCreditNoteTransCode);
-        arParams.Add("p5", _settings.ArCustomerStatus);
-        arParams.Add("p6", _settings.ArMinYear);
+        arParams.Add("p4", _settings.ArCustomerStatus);
+        arParams.Add("p5", _settings.ArMinYear);
 
         return await QueryAllCompaniesAsync(apWhere, arWhere, apParams, arParams, cancellationToken);
     }
@@ -175,11 +173,13 @@ public class DirectQueryDataSource : IInvoiceDataSource
     // ── Private helpers ──────────────────────────────────────────────────────
 
     /// <summary>
-    /// Removes ESTRCD=20 (credit-note) rows that share an ESCINO with an ESTRCD=10 (invoice) row.
-    /// These are M3 cash-receipt clearing offsets, not standalone credit notes. When M3 partially
-    /// applies a payment, it posts a positive ESTRCD=20 row to offset the negative ESCUAM on the
-    /// ESTRCD=10 row — both share the same ESCINO. Submitting the ESTRCD=20 row as a credit note
-    /// to LHDN is incorrect; only the original ESTRCD=10 invoice should be submitted.
+    /// Removes ESTRCD=20 rows that share an ESCINO with an ESTRCD=10 (invoice) row.
+    ///
+    /// ADR-019: the AR queries now filter ESTRCD='10' at source, so in normal operation no
+    /// ESTRCD=20 row ever reaches this method and it is a no-op. It is retained as
+    /// defence-in-depth for the StoredProcedure data source and any future caller that does
+    /// not apply the source filter — submitting an ESTRCD=20 settlement posting to LHDN as a
+    /// credit note is a compliance error, so the guard is worth keeping cheap and in place.
     /// </summary>
     internal static List<RawInvoiceRecord> DeduplicateArRecords(List<RawInvoiceRecord> arRecords)
     {

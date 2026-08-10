@@ -78,10 +78,18 @@ public class MovexDbSettings
     public string ArTransCode { get; set; } = "10";
 
     /// <summary>
-    /// AR transaction code for credit notes — FSLEDG.ESTRCD (e.g., "20").
-    /// Rows with this code are mapped to LHDN document type "02" (credit note).
+    /// AR settlement/payment transaction code — FSLEDG.ESTRCD (e.g., "20").
+    ///
+    /// ADR-019: this is NOT a credit-note code. Data profiling across 2024–2026 (all divisions)
+    /// found zero standalone ESTRCD=20 rows — every one offsets an ESTRCD=10 invoice with the
+    /// same ESCINO, with mirror-image min/max amounts. ESTRCD=20 is the AR analogue of AP's
+    /// eptrcd=50 (payment), and rows carrying it are excluded from LHDN submission at source.
+    ///
+    /// Retained (unused by the AR queries) so the code is named and documented rather than a
+    /// bare literal, and as the place to configure a genuine AR credit-note code should Finance
+    /// introduce one. If that happens, revisit ADR-019 before wiring it back into the queries.
     /// </summary>
-    public string ArCreditNoteTransCode { get; set; } = "20";
+    public string ArSettlementTransCode { get; set; } = "20";
 
     /// <summary>
     /// AR customer status filter — OCUSMA.OKSTAT (e.g., "20" = active)

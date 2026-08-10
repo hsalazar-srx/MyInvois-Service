@@ -135,4 +135,59 @@ public class UblDocumentBuilderTests
         var ubl = UblDocumentBuilder.BuildUnsigned(doc);
         ExtractSupplierCountryCode(ubl).Should().Be("GBR");
     }
+
+    // -----------------------------------------------------------------------
+    // DS322 regression — JSON string escaping must match LHDN's serializer
+    //
+    // LHDN parse+reserializes our submitted document and re-computes the SHA-256
+    // docDigest. System.Text.Json's DEFAULT encoder escapes &, +, ', <, > and all
+    // non-ASCII as \uXXXX; LHDN's library emits them literally. That byte divergence
+    // produced DS322 on any invoice whose text contained one of these characters —
+    // and passed on plain-ASCII invoices, which is why failures looked patternless.
+    // MinifyOptions must therefore use JavaScriptEncoder.UnsafeRelaxedJsonEscaping.
+    // -----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("SMITH & SONS SDN BHD", "&")]          // ampersand — company names
+    [InlineData("O'BRIEN TRADING", "'")]               // apostrophe — names
+    [InlineData("MÜLLER ELEKTRONIK", "Ü")]             // non-ASCII accent
+    [InlineData("LOT 5–7, JALAN PERUSAHAAN", "–")]     // en-dash — addresses
+    [InlineData("A <TEST> COMPANY", "<")]              // angle brackets
+    public void Minify_SpecialCharactersInText_EmittedLiterallyNotUnicodeEscaped(
+        string supplierName, string expectedLiteralChar)
+    {
+        var doc = MinimalDoc();
+        doc.SupplierName = supplierName;
+
+        var json = UblDocumentBuilder.Minify(UblDocumentBuilder.BuildUnsigned(doc));
+
+        json.Should().Contain(expectedLiteralChar,
+            "LHDN re-serializes with literal characters; escaping them breaks the docDigest (DS322)");
+        json.Should().NotContain("\\u",
+            "any \\uXXXX escape means our bytes diverge from LHDN's re-serialized bytes");
+    }
+
+    [Fact]
+    public void Minify_PlusPrefixedPhoneNumber_NotEscaped()
+    {
+        // "+" is escaped to + by the default encoder — breaks digests on any
+        // invoice carrying an international-format phone number.
+        var doc = MinimalDoc();
+        doc.SupplierPhone = "+6072319006";
+
+        var json = UblDocumentBuilder.Minify(UblDocumentBuilder.BuildUnsigned(doc));
+
+        json.Should().Contain("+6072319006");
+        json.Should().NotContain("\\u002B");
+    }
+
+    [Fact]
+    public void Minify_PlainAsciiDocument_ContainsNoEscapeSequences()
+    {
+        // Control case: plain-ASCII invoices always passed LHDN validation. This test
+        // pins that they remain byte-stable after the encoder change.
+        var json = UblDocumentBuilder.Minify(UblDocumentBuilder.BuildUnsigned(MinimalDoc()));
+
+        json.Should().NotContain("\\u");
+    }
 }

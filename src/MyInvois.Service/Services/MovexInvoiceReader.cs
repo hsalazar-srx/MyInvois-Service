@@ -138,8 +138,11 @@ public class MovexInvoiceReader : IMovexInvoiceReader
             InvoiceNumber = raw.InvoiceNo,
             InvoiceDate = invoiceDate,
             InvoiceType = raw.InvoiceType == "AP" ? "Purchase" : "Sales",
-            // AR: TransCode from FSLEDG.ESTRCD ("10"=invoice, "20"=credit note) — amount sign
-            //     is positive for both, so ESTRCD is the only reliable signal.
+            // AR: TransCode from FSLEDG.ESTRCD. ADR-019 — only "10" (invoice) is ever fetched;
+            //     "20" is a settlement/payment posting (AP eptrcd=50 analogue), excluded at source.
+            //     Do NOT derive AR document type from the ESCUAM sign: ESCUAM is legitimately
+            //     negative on genuine ESTRCD=10 invoices once M3 applies a cash receipt against
+            //     them, so a sign-based rule misclassifies real invoices.
             // AP: EPTRCD not in AP query; derive from InvoiceAmount sign instead.
             //     AP query does epcuam*-1 → credit notes (positive EPCUAM) arrive negative.
             TransCode = raw.InvoiceType == "AP"

@@ -684,4 +684,162 @@ HTTP 200 from `/documentsubmissions` = synchronous acceptance only. Step 08 (sig
 - ⚠️ All prior submissions (before 2026-05-11) had broken signatures — they will show DS320/DS322 in portal and cannot be corrected; they must be resubmitted
 - ⚠️ HTTP 200 from LHDN is not a sufficient success signal — portal verification required
 
+---
+
+## ADR-018: JSON String Escaping Must Match LHDN's Serializer (DS322 — Second Root Cause)
+
+**Date:** 2026-08-10
+**Status:** Accepted
+**Amends:** ADR-017 (digest scope). That fix was correct but incomplete.
+
+### Context
+
+After ADR-017 corrected both digest scopes, DS320/DS322 continued to appear intermittently in
+Step 08 validation — across sales invoices, credit notes, and purchase documents alike. No common
+characteristic was identifiable: two documents with near-identical structure and content would
+behave differently, one valid and one rejected.
+
+An enquiry was raised with the MyInvois Help Desk on 2026-07-21. Their reply (received before this
+decision) stated only that "signature value 1 / value 3 is calculated wrongly — please follow the
+signature document again", and noted that *"even adding extra spacing in the document again signing
+the document will trigger this error"*. That last remark describes a byte-level canonicalisation
+mismatch, but no specific cause was identified by LHDN. Follow-up questions asking which normalisations
+their library applies, and requesting the canonical string they hashed for a named failing document,
+remained unanswered.
+
+### Root Cause
+
+`MinifyOptions` in `UblDocumentBuilder` never set an `Encoder`, so `System.Text.Json` used its
+**default `JavaScriptEncoder`**. That encoder is deliberately conservative for HTML-injection safety
+and escapes characters which LHDN's JSON library does **not** escape when it parses and re-serializes
+the submitted document prior to re-hashing:
+
+| Character | .NET default emits | LHDN re-serializes as | Typical source |
+|---|---|---|---|
+| `&` | `&` | `&` | Company names |
+| `+` | `+` | `+` | International phone numbers |
+| `'` | `'` | `'` | Customer / supplier names |
+| `<` `>` | `<` `>` | `<` `>` | Free-text address lines |
+| any non-ASCII | `\uXXXX` | literal UTF-8 | Accented names, en-dashes |
+
+Our bytes carried the escape sequences; LHDN's carried the literal characters. The two SHA-256
+digests therefore diverged. Because `Minify` is used for both the document digest and the signed
+properties digest, this could surface as DS322 or DS320.
+
+**This explains the absence of a pattern.** The failure is data-dependent, not document-type
+dependent: any invoice whose text happened to be plain ASCII passed; any invoice containing one of
+the characters above failed. It survived the ADR-017 fix because that addressed digest *scope*, and
+it survived the earlier `DecimalNormalizer` fix because that addressed *numbers* — this is *strings*.
+
+### Verification
+
+Both encoder configurations were run against representative MOVEX-sourced values before the change
+was made. Every sample containing `&`, `+`, `'`, `<`, or a non-ASCII character produced a different
+SHA-256 digest under the two encoders; a plain-ASCII control sample produced an identical digest.
+
+### Decision
+
+**Set `Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping` on `MinifyOptions`.** This emits the
+affected characters literally, matching LHDN's serializer byte-for-byte.
+
+The `Unsafe` prefix refers solely to HTML-rendering contexts (XSS). This JSON is hashed, base64
+encoded, and submitted over HTTPS to an API — it is never rendered as HTML, so the caveat does not
+apply here.
+
+### Files Changed
+
+- `src/MyInvois.Service/Services/UblDocumentBuilder.cs` — `MinifyOptions.Encoder`, `System.Text.Encodings.Web` using
+- `tests/.../Services/UblDocumentBuilderTests.cs` — 7 regression tests covering `&`, `'`, non-ASCII, en-dash, `<>`, `+`-prefixed phone, and a plain-ASCII control
+
+### Consequences
+
+- ✅ Removes a root cause of intermittent DS320/DS322 that survived ADR-017
+- ✅ Regression tests pin the encoder behaviour; reverting it fails the suite
+- ⚠️ Documents submitted before this change that contained non-ASCII or the affected punctuation had
+  invalid signatures and must be resubmitted
+- ⚠️ LHDN has not confirmed this diagnosis; it is our own finding. The Help Desk thread should be kept
+  open until Step 08 results over a full batch confirm the fix in practice
+
+---
+
+## ADR-019: AR ESTRCD=20 Is a Settlement Posting, Not a Credit Note
+
+**Date:** 2026-08-10
+**Status:** Accepted
+**Supersedes:** the credit-note interpretation of `ESTRCD=20` assumed by the original AR query design
+**Evidence:** `src/Database/Diagnostics/AR_CreditNote_vs_Payment_Profiling.sql`
+
+### Context
+
+The AR query fetched `FSLEDG.ESTRCD IN ('10','20')` and mapped every `ESTRCD=20` row to LHDN document
+type `02` (credit note). Business users reported that documents were being submitted as AR credit
+notes which were not credit notes, and asked that AR treat them the way AP treats payments.
+
+AP and AR were already asymmetric:
+
+| | AP (`FPLEDG`) | AR (`FSLEDG`) |
+|---|---|---|
+| Invoice code | `eptrcd = 40` | `ESTRCD = 10` |
+| Payment code | `eptrcd = 50` — **excluded at source** | *(none identified)* |
+| Credit note | `eptrcd=40` row, negative amount | assumed `ESTRCD = 20` |
+
+An earlier fix (`DeduplicateArRecords`) removed `ESTRCD=20` rows sharing an `ESCINO` with an
+`ESTRCD=10` row, treating the pairing as an edge case. It was not an edge case.
+
+### Evidence
+
+Read-only profiling of `FSLEDG`, production company, all divisions, `ESYEA4 >= 2024`. Monetary values
+are deliberately not reproduced here; re-run the diagnostics script if figures are needed.
+
+- **No standalone `ESTRCD=20` rows exist.** The pairing-integrity check (Q6) over 646 rows returned
+  `UnpairedCount = 0`. Most pairs net to exactly zero; the remainder are partially-settled invoices.
+- **Amounts are exact mirror images.** In every division and year sampled, the `ESTRCD=20` min/max is
+  the precise negation of the `ESTRCD=10` range, with equal and opposite period sums. In one
+  low-volume division the two codes net to exactly zero.
+- **`ESTRCD=20` rows frequently outnumber `ESTRCD=10` rows** — by roughly 40% in the two
+  highest-volume division/year combinations. Credit notes cannot outnumber invoices; partial
+  settlements can, because one invoice attracts multiple payment postings.
+- **Only codes 10 and 20 exist** in any division or year sampled.
+
+### Decision
+
+**Filter AR to `ESTRCD = '10'` at source**, exactly as AP filters `eptrcd = 40`. `ESTRCD=20` rows are
+never fetched and never submitted.
+
+### Alternatives Considered
+
+- **Derive AR document type from the `ESCUAM` sign, mirroring AP.** Rejected: `ESCUAM` is legitimately
+  negative on genuine `ESTRCD=10` invoices once M3 applies a cash receipt against them, so a
+  sign-based rule reintroduces the very bug it would be meant to fix — and it would only relabel
+  rows, not stop submitting them.
+- **Exclude `ESTRCD=20` rows lacking `ODLINE` line items.** Rejected as unnecessary: it presumed
+  standalone `ESTRCD=20` rows existed to be filtered. They do not.
+- **Leave `DeduplicateArRecords` as the sole guard.** Rejected: functionally equivalent today, but in
+  the wrong layer, fetching roughly half the AR result set per batch only to discard it, and leaving
+  a misleading `ESTRCD IN ('10','20')` in the SQL for the next reader.
+
+### Files Changed
+
+- `src/MyInvois.Service/DataAccess/DirectQueryDataSource.cs` — `ESTRCD IN (?,?)` → `ESTRCD = ?` at three query sites
+- `src/MyInvois.Service/Configuration/MovexDbSettings.cs` — `ArCreditNoteTransCode` → `ArSettlementTransCode`
+- `src/MyInvois.Service/Services/MovexInvoiceReader.cs` — corrected transaction-code comment
+- `src/Database/Diagnostics/AR_CreditNote_vs_Payment_Profiling.sql` — new, with findings recorded
+
+### Consequences
+
+- ✅ Settlement postings are no longer submitted to LHDN as credit notes
+- ✅ AP and AR now follow the same shape: invoices only, settlements excluded at source
+- ✅ Materially fewer AR rows fetched per batch
+- ⚠️ **If Finance ever issues a genuine AR credit note, it will not be submitted.** The evidence says
+  none exist across three years and every division, but this is the single assumption to revisit.
+  `ArSettlementTransCode` is retained in configuration as the documented place to handle that case;
+  revisit this ADR before wiring it back into the queries
+- ⚠️ Finance had not yet confirmed how a genuine AR credit note would be raised at the time of this
+  decision. The change was made on data evidence because the status quo was actively submitting
+  incorrect documents to a tax authority
+- ℹ️ `DeduplicateArRecords` becomes a no-op for `DirectQueryDataSource`; retained as defence-in-depth
+  for `StoredProcedureDataSource` with its regression tests intact
+
+---
+
 **End of ADRs**
