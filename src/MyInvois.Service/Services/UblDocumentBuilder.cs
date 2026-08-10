@@ -4,6 +4,7 @@ using MyInvois.Service.Models;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -658,6 +659,21 @@ public static class UblDocumentBuilder
         WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         PropertyNamingPolicy = null,  // preserve exact property names
+
+        // DS322 root cause: System.Text.Json's DEFAULT encoder escapes characters that LHDN's
+        // JSON library does not when it parse+reserializes our document before re-hashing:
+        //   &  -> &    (company names: "SMITH & SONS")
+        //   +  -> +    (phone numbers: "+6072319006")
+        //   '  -> '    (names: "O'BRIEN")
+        //   <  -> <  , >  -> >
+        //   any non-ASCII -> \uXXXX  (accents, en-dashes in addresses)
+        // Our bytes carried the escapes, theirs carried the literal characters, so the two
+        // SHA-256 digests diverged and LHDN returned DS322. Invoices whose text happened to be
+        // plain ASCII passed — which is why the failures looked random across invoice types.
+        // UnsafeRelaxedJsonEscaping emits these characters literally, matching LHDN byte-for-byte.
+        // "Unsafe" refers only to HTML-context XSS; this JSON is never rendered as HTML.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+
         Converters = { new DecimalNormalizer() }
     };
 
