@@ -112,6 +112,11 @@ public class DirectQueryDataSourceTests
     // Real-world case: FSLEDG for invoice 009713132 had ESTRCD=10 (ESCUAM=-98.04)
     // and ESTRCD=20 (ESCUAM=+98.04) for the same ESCINO — the ESTRCD=20 row was
     // being submitted as a credit note to LHDN before this fix.
+    //
+    // ADR-019 UPDATE: the AR queries now filter ESTRCD='10' at source, so this method
+    // is a no-op for DirectQueryDataSource in normal operation. It is retained as
+    // defence-in-depth for the StoredProcedure data source and future callers, and
+    // these tests continue to pin its behaviour.
 
     [Fact]
     public void DeduplicateArRecords_PairedInvoiceAndClearingEntry_RemovesClearingEntry()
@@ -131,9 +136,13 @@ public class DirectQueryDataSourceTests
     }
 
     [Fact]
-    public void DeduplicateArRecords_StandaloneCreditNote_IsPreserved()
+    public void DeduplicateArRecords_StandaloneTransCode20_IsPreserved()
     {
-        // A credit note with no matching ESTRCD=10 row must be kept — it is a genuine credit note.
+        // An ESTRCD=20 row with no matching ESTRCD=10 row is left alone by this method —
+        // it only removes PAIRED rows. Note ADR-019 profiling found zero standalone
+        // ESTRCD=20 rows in 2024–2026 across all divisions (UnpairedCount = 0), and the
+        // AR queries now exclude ESTRCD=20 at source, so this input should not occur in
+        // practice. Pinned to keep the method's contract narrow and predictable.
         var records = new List<RawInvoiceRecord>
         {
             new() { InvoiceNo = "CN001", TransCode = "20", InvoiceAmount = 500m },
@@ -153,7 +162,7 @@ public class DirectQueryDataSourceTests
             new() { InvoiceNo = "INV-A", TransCode = "10", InvoiceAmount =  1000m },
             new() { InvoiceNo = "INV-A", TransCode = "20", InvoiceAmount = -1000m }, // paired — must be removed
             new() { InvoiceNo = "INV-B", TransCode = "10", InvoiceAmount =   500m },
-            new() { InvoiceNo = "CN-C",  TransCode = "20", InvoiceAmount =   200m }, // standalone — must be kept
+            new() { InvoiceNo = "CN-C",  TransCode = "20", InvoiceAmount =   200m }, // unpaired — not this method's job to remove
         };
 
         var result = DirectQueryDataSource.DeduplicateArRecords(records);
