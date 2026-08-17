@@ -760,6 +760,52 @@ apply here.
 - ⚠️ LHDN has not confirmed this diagnosis; it is our own finding. The Help Desk thread should be kept
   open until Step 08 results over a full batch confirm the fix in practice
 
+### Outcome (2026-08-11)
+
+Deployed to UAT 2026-08-10. Finance reported after the following batch that **almost all previous
+Step 08 issues are gone** — the intermittent DS320/DS322 rejections that had persisted since the
+XAdES implementation appear resolved.
+
+Three independent root causes produced the same two error codes, which is why each earlier fix
+appeared to work and then regressed:
+
+| # | Root cause | Fix | Record |
+|---|---|---|---|
+| 1 | Digest computed over wrong scope | Correct docDigest / propsDigest scope | ADR-017 |
+| 2 | Trailing decimal zeros not stripped | `DecimalNormalizer` on `MinifyOptions` | Sprint 8 |
+| 3 | JSON string escaping mismatch | `UnsafeRelaxedJsonEscaping` encoder | ADR-018 |
+
+**Verification caveat.** The result is Finance's read of the LHDN portal, not confirmed audit-DB
+data — the audit SQLite DB is on SRXWEBAPP1 and was not queried. Confirm via:
+
+```sql
+SELECT InvoiceNumber, MyInvoisUUID, MyInvoisStatus, Status, ErrorMessage
+FROM AuditLogs WHERE Action = 'MyInvois_Submit' ORDER BY Timestamp DESC;
+```
+
+`MyInvoisStatus` should now be populated where it was previously always NULL.
+
+A clean batch does not by itself validate ADR-018: if the batch contained only plain-ASCII
+invoices it exercised nothing. Confirm at least one submitted invoice carried `&`, `'`, `+` or a
+non-ASCII character before treating the encoder fix as proven.
+
+The fix shipped alongside ADR-019 and the Step 8 polling work, so attribution between the three is
+not isolated.
+
+**LHDN never confirmed the diagnosis.** The Help Desk enquiry of 2026-07-21 restated "signature
+value 1/3 calculated wrongly" and noted that "even adding extra spacing ... will trigger this
+error" — consistent with a canonicalisation mismatch but identifying nothing specific. Requests for
+their canonical string and their library's normalisation list went unanswered.
+
+### Follow-on issue (open)
+
+Finance also reported that some **invalid manual entries related to miscellaneous invoices** were
+submitted and should not have been. This is an eligibility/scope filter gap, not a signature or
+data-quality defect — the documents were constructed and signed correctly but should never have
+entered the pipeline. No manual/miscellaneous filter exists in the codebase as of 2026-08-11. The
+discriminator is unknown and should be established by data profiling before any code change, per
+the approach that produced ADR-019.
+
 ---
 
 ## ADR-019: AR ESTRCD=20 Is a Settlement Posting, Not a Credit Note
