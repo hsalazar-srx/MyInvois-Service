@@ -1,9 +1,14 @@
 # MyInvois-Service — Deployment Runbook
 
 **Target Audience:** IT Operations / Development Lead
-**Version:** 2.0
-**Last Updated:** 2026-05-27
-**Status:** UAT Active (pre-prod LHDN endpoint)
+**Version:** 3.0
+**Last Updated:** 2026-08-11
+**Status:** UAT signed off — **production go-live approved**
+
+> **Going to production?** Work through **[Part B — Production Go-Live](#part-b--production-go-live)**
+> at the foot of this document. It is a self-contained runbook covering the certificate chain
+> import, endpoint and credential switch, and first-submission verification. Parts 1–10 below
+> describe the UAT deployment and remain the reference for routine redeploys.
 
 ---
 
@@ -34,10 +39,14 @@ Keeping the process alive (as a Windows Service or IIS-hosted app) is all that i
 
 ### Certificate
 
+**UAT / pre-prod:**
 - [ ] Trial cert file present: `C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12`
-- [ ] Trial cert expiry confirmed: **2026-09-05** (production cert required before go-live)
+- [ ] Trial cert expiry confirmed: **2026-09-05**
 - [ ] NTFS ACL on `C:\Certs\MyInvois\` restricted to service account + Administrators
 - [ ] EFS encryption enabled on `C:\Certs\MyInvois\`
+
+**Production:** the trial cert does not apply and the production certificate arrives as a
+three-file chain, not a single `.p12`. See **[Part B](#part-b--production-go-live)**.
 
 ### Data directory
 
@@ -79,9 +88,9 @@ Run from your development machine before pushing to GitHub:
 ```powershell
 cd "c:\Projects\MyInvois-Service"
 
-# 1a. Confirm all 276 tests pass before pushing
-dotnet test --configuration Release --filter "Category!=Smoke"
-# Expected: Passed! Failed: 0, Passed: 276
+# 1a. Confirm all tests pass before pushing
+dotnet test --configuration Release --filter "Category!=Sandbox&Category!=RequiresDb2"
+# Expected: Passed! Failed: 0, Passed: 336
 
 # 1b. Push to GitHub
 git push origin develop
@@ -288,8 +297,12 @@ Expected response:
 Check the audit DB immediately after:
 ```powershell
 $db = "E:\data\audit.db"
-sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisUUID FROM SubmissionAuditLog ORDER BY SubmittedAt DESC LIMIT 10;"
+sqlite3 $db "SELECT InvoiceNumber, Status, MyInvoisStatus, MyInvoisUUID FROM AuditLogs ORDER BY Timestamp DESC LIMIT 10;"
 ```
+
+> **Table is `AuditLogs`, timestamp column is `Timestamp`.** Earlier revisions of this runbook
+> referenced `SubmissionAuditLog` / `SubmittedAt`, which do not exist — those queries fail with
+> "no such table". Column names are defined in `src/MyInvois.Service/Data/AuditLogEntity.cs`.
 
 ---
 
@@ -364,22 +377,37 @@ After the 02:00 AM scheduled run:
 ```powershell
 $db = "E:\data\audit.db"
 
-# Summary of overnight batch
+# Summary of overnight batch — Status is the sync (Step 4) result
 sqlite3 $db @"
 SELECT Status, COUNT(*) AS Count
-FROM SubmissionAuditLog
-WHERE SubmittedAt > datetime('now', '-10 hours')
+FROM AuditLogs
+WHERE Timestamp > datetime('now', '-10 hours')
 GROUP BY Status;
+"@
+
+# Step 8 async validation outcome — this is the one that matters
+sqlite3 $db @"
+SELECT COALESCE(MyInvoisStatus, '(not polled)') AS Step8Status, COUNT(*) AS Count
+FROM AuditLogs
+WHERE Timestamp > datetime('now', '-10 hours')
+GROUP BY MyInvoisStatus;
 "@
 
 # Any failures?
 sqlite3 $db @"
-SELECT InvoiceNumber, ErrorCode, ErrorMessage
-FROM SubmissionAuditLog
+SELECT InvoiceNumber, StatusCode, MyInvoisStatus, ErrorMessage
+FROM AuditLogs
 WHERE Status = 'Failed'
-  AND SubmittedAt > datetime('now', '-10 hours');
+  AND Timestamp > datetime('now', '-10 hours');
 "@
 ```
+
+> **`Status` vs `MyInvoisStatus`.** `Status` is LHDN's synchronous Step 4 acceptance.
+> `MyInvoisStatus` is the asynchronous Step 8 validation result, polled ~5 minutes after the
+> batch. An invoice can be `Status='Success'` and `MyInvoisStatus='Invalid'` — LHDN accepted the
+> submission then rejected it on validation. When Step 8 returns `Invalid`, the service sets
+> `Status='Failed'` so the invoice can be corrected and resubmitted (duplicate detection only
+> blocks re-submission of `Status='Success'` rows).
 
 ---
 
@@ -440,7 +468,7 @@ dotnet test tests/MyInvois.Service.Tests `
 Run all other tests (excludes smoke):
 ```powershell
 dotnet test --filter "Category!=Smoke"
-# Expected: Passed! Failed: 0, Passed: 276
+# Expected: Passed! Failed: 0, Passed: 336
 ```
 
 ---
@@ -487,24 +515,29 @@ Both token and submission use the **same host** — `preprod-api.myinvois.hasil.
 ```powershell
 $db = "E:\data\audit.db"
 
-# Certificate days remaining
-$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-    "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12", "<password>")
-Write-Host "Cert expires in: $(($cert.NotAfter - (Get-Date)).Days) days"
-
-# Service running?
-Get-Service -Name "MyInvois-UAT"
+# Certificate days remaining — read from the store, no password needed
+$thumb = "<configured CertificateThumbprint>"
+$cert  = Get-ChildItem "Cert:\LocalMachine\My\$thumb"
+Write-Host "Cert expires in: $(($cert.NotAfter - (Get-Date)).Days) days  ($($cert.NotAfter))"
 
 # Audit DB accessible + WAL mode
 sqlite3 $db "PRAGMA journal_mode;"           # Expected: wal
-sqlite3 $db "SELECT COUNT(*) FROM SubmissionAuditLog;"
+sqlite3 $db "SELECT COUNT(*) FROM AuditLogs;"
 
-# Failures in last 24 hours
+# Failures in last 24 hours (includes Step 8 rejections — those set Status='Failed')
 sqlite3 $db @"
 SELECT COUNT(*) AS Failures
-FROM SubmissionAuditLog
+FROM AuditLogs
 WHERE Status = 'Failed'
-  AND SubmittedAt > datetime('now', '-24 hours');
+  AND Timestamp > datetime('now', '-24 hours');
+"@
+
+# Anything accepted but never Step 8 polled (should be zero after the polling window)
+sqlite3 $db @"
+SELECT COUNT(*) AS AwaitingStep8
+FROM AuditLogs
+WHERE Status = 'Success' AND MyInvoisStatus = 'Submitted'
+  AND Timestamp > datetime('now', '-24 hours');
 "@
 ```
 
@@ -513,12 +546,14 @@ WHERE Status = 'Failed'
 ```powershell
 $db = "E:\data\audit.db"
 sqlite3 $db @"
-SELECT strftime('%Y-%m', SubmittedAt) AS Month,
+SELECT strftime('%Y-%m', Timestamp) AS Month,
        COUNT(*) AS Total,
-       SUM(CASE WHEN Status='Success' THEN 1 ELSE 0 END) AS Success,
-       SUM(CASE WHEN Status='Failed'  THEN 1 ELSE 0 END) AS Failed,
-       ROUND(SUM(CASE WHEN Status='Success' THEN 1.0 ELSE 0 END) * 100 / COUNT(*), 1) AS SuccessRate
-FROM SubmissionAuditLog
+       SUM(CASE WHEN MyInvoisStatus='Valid'   THEN 1 ELSE 0 END) AS Step8Valid,
+       SUM(CASE WHEN MyInvoisStatus='Invalid' THEN 1 ELSE 0 END) AS Step8Invalid,
+       SUM(CASE WHEN Status='Failed' THEN 1 ELSE 0 END) AS Failed,
+       ROUND(SUM(CASE WHEN MyInvoisStatus='Valid' THEN 1.0 ELSE 0 END) * 100 / COUNT(*), 1) AS ValidRate
+FROM AuditLogs
+WHERE Action = 'MyInvois_Submit'
 GROUP BY Month
 ORDER BY Month DESC;
 "@
@@ -554,14 +589,21 @@ Files to include in every backup:
 
 ### Certificate backup (encrypted, quarterly)
 
-```powershell
-$source   = "C:\Certs\MyInvois\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12"
-$backup   = "\\backup-server\Certificates\MyInvois\myinvois-cert.BACKUP.7z"
-$archPass = "<backup archive password — different from cert password>"
+Back up **all three production files** — the `.p12` alone is not sufficient to rebuild the server.
+Without the two CA certificates the chain cannot be reconstructed from backup.
 
-7z a -tzip -mem=AES256 -p$archPass "$backup" "$source"
-7z l "$backup"   # Verify
+```powershell
+$sourceDir = "C:\Certs\MyInvois\Prod"       # .p12 + intermediate .cer + root .cer
+$backup    = "\\backup-server\Certificates\MyInvois\myinvois-prod-chain.BACKUP.7z"
+$archPass  = "<backup archive password — different from cert password>"
+
+7z a -tzip -mem=AES256 -p$archPass "$backup" "$sourceDir\*"
+7z l "$backup"   # Verify all three files are listed
 ```
+
+Store the archive password and the `.p12` password separately from the archive itself, in the
+organisation's credential store. Record the certificate **thumbprint** alongside them — it is
+needed for config and is not secret.
 
 ---
 
@@ -594,18 +636,369 @@ Start-Service "MyInvois-UAT"
 
 ---
 
-## Go-Live Checklist (Production — After UAT Sign-Off)
+---
 
-These items are **not yet completed** — UAT is the current phase.
+# Part B — Production Go-Live
 
-- [ ] Production digital certificate received from Finance (not trial cert)
-- [ ] Production cert tested in pre-prod before switching
-- [ ] `appsettings.Production.json` prepared with production LHDN endpoint (`api.myinvois.hasil.gov.my`)
-- [ ] `ASPNETCORE_ENVIRONMENT=Production` set on production server
-- [ ] `BatchScheduler:LookbackDays` confirmed with Finance (how far back to submit)
-- [ ] SQL Server audit mirror evaluated (if single-instance SQLite becomes a concern)
-- [ ] Finance sign-off on UAT results (success rate ≥ 95%)
-- [ ] Submission window agreed with Finance (avoid month-end close conflict)
+**Status:** UAT signed off 2026-08-11; go-live approved.
+
+This part is self-contained. Work through B1 → B8 in order. Steps B1–B4 are preparation and can
+be done ahead of the cutover window; B5 onward changes live behaviour.
+
+> **The single most important difference from UAT:** you now have a **certificate chain**, not
+> just a `.p12`. The two extra `.cer` files must be imported into the correct stores or LHDN will
+> reject signatures it cannot chain to a trusted root.
+
+---
+
+## B0 — What You Received, and Where Each File Goes
+
+Finance supplied three files plus a password:
+
+| File | What it is | Destination | Goes in config? |
+|---|---|---|---|
+| `*.p12` | Leaf certificate **+ private key** — signs documents | `LocalMachine\My` (Personal) | Yes — by thumbprint |
+| `*.cer` (one of two) | **Intermediate CA** — chain link | `LocalMachine\CA` (Intermediate CAs) | **No** |
+| `*.cer` (other) | **Root CA** — trust anchor | `LocalMachine\Root` (Trusted Root CAs) | **No** |
+
+**The `.cer` files are never referenced by the application and are never embedded in the signed
+document.** The signing code sends only the leaf certificate — a single `X509Certificate` element
+built from the leaf's raw bytes (`UblDocumentBuilder.BuildUblExtensions`). This is correct per LHDN
+SDK v1.5 and does not change for production. The CA certificates exist so Windows — and LHDN's
+validator — can build a trusted chain from your leaf up to a root they recognise.
+
+**Identify which `.cer` is which** before importing:
+
+```powershell
+Get-ChildItem "C:\Certs\MyInvois\Prod\*.cer" | ForEach-Object {
+    $c = Get-PfxCertificate -FilePath $_.FullName
+    [PSCustomObject]@{
+        File       = $_.Name
+        Subject    = $c.Subject
+        Issuer     = $c.Issuer
+        SelfSigned = ($c.Subject -eq $c.Issuer)   # True  => ROOT
+        Expires    = $c.NotAfter
+    }
+} | Format-List
+```
+
+- `SelfSigned = True` → **root CA** → `LocalMachine\Root`
+- `SelfSigned = False` → **intermediate CA** → `LocalMachine\CA`
+
+Sanity check: the intermediate's `Subject` should match the `.p12` leaf's `Issuer`, and the
+intermediate's `Issuer` should match the root's `Subject`.
+
+---
+
+## B1 — Secure the Certificate Files
+
+```powershell
+# On the production server, as Administrator
+New-Item -ItemType Directory -Force "C:\Certs\MyInvois\Prod"
+
+# Copy the .p12 and both .cer files there, then lock the directory down
+icacls "C:\Certs\MyInvois\Prod" /inheritance:r
+icacls "C:\Certs\MyInvois\Prod" /grant "Administrators:(OI)(CI)F"
+icacls "C:\Certs\MyInvois\Prod" /grant "SYSTEM:(OI)(CI)F"
+icacls "C:\Certs\MyInvois\Prod"   # verify — no Users/Everyone entries
+```
+
+> **Never commit any of these files, or the password, to source control.** They belong on the
+> server and in your organisation's secure credential store only.
+
+---
+
+## B2 — Import the Chain (Order Matters)
+
+Import **root first, then intermediate, then the leaf**. Importing the leaf before its issuers
+can leave Windows unable to build the chain until a refresh.
+
+```powershell
+# Run as Administrator on the production server
+
+# 1. Root CA -> Trusted Root Certification Authorities
+Import-Certificate -FilePath "C:\Certs\MyInvois\Prod\<root>.cer" `
+    -CertStoreLocation Cert:\LocalMachine\Root
+
+# 2. Intermediate CA -> Intermediate Certification Authorities
+Import-Certificate -FilePath "C:\Certs\MyInvois\Prod\<intermediate>.cer" `
+    -CertStoreLocation Cert:\LocalMachine\CA
+
+# 3. Leaf + private key -> Personal
+$pw = Read-Host -AsSecureString "Production .p12 password"
+Import-PfxCertificate -FilePath "C:\Certs\MyInvois\Prod\<production>.p12" `
+    -CertStoreLocation Cert:\LocalMachine\My `
+    -Password $pw
+```
+
+The `Import-PfxCertificate` output includes the **thumbprint** — record it, you need it in B4.
+
+---
+
+## B3 — Verify the Chain Builds (Do Not Skip)
+
+This is the step that catches a misplaced or missing intermediate. A signature that fails to chain
+is accepted at Step 4 and rejected at Step 8, minutes later.
+
+```powershell
+$thumb = "<production thumbprint from B2>"
+$cert  = Get-ChildItem "Cert:\LocalMachine\My\$thumb"
+
+# Basic facts
+$cert | Format-List Subject, Issuer, NotBefore, NotAfter, HasPrivateKey, Thumbprint
+
+# Chain validation
+$chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+$built = $chain.Build($cert)
+Write-Host "Chain builds: $built"
+$chain.ChainElements | ForEach-Object { "  $($_.Certificate.Subject)" }
+$chain.ChainStatus    | ForEach-Object { "  STATUS: $($_.Status) - $($_.StatusInformation)" }
+```
+
+**All of the following must hold before continuing:**
+
+- [ ] `HasPrivateKey` = `True` — signing throws `"Certificate does not contain a private key"` otherwise
+- [ ] `Chain builds` = `True`
+- [ ] `ChainStatus` is empty (no `UntrustedRoot`, no `PartialChain`, no `RevocationStatusUnknown`)
+- [ ] Chain lists three elements: leaf → intermediate → root
+- [ ] `NotAfter` is comfortably in the future — record the date in B8
+
+If `PartialChain` or `UntrustedRoot` appears, the intermediate or root landed in the wrong store.
+Re-check B0's identification and re-import.
+
+---
+
+## B4 — Grant the App Pool Private-Key Access
+
+Without this the certificate loads but signing fails with *"Keyset does not exist"*.
+
+```powershell
+certlm.msc
+# Personal -> Certificates -> right-click the production certificate
+# All Tasks -> Manage Private Keys -> Add
+# Object name: IIS AppPool\MyInvoisAPI      (match your actual pool name)
+# Permission:  Read   (Full Control is not required)
+```
+
+Confirm the pool name first if unsure:
+
+```powershell
+& "$env:windir\system32\inetsrv\appcmd.exe" list apppool
+```
+
+---
+
+## B5 — Prepare `appsettings.Production.json`
+
+Create on the production server, alongside the published files. **Never commit this file.**
+
+```json
+{
+  "Logging": {
+    "LogLevel": { "Default": "Information", "MyInvois": "Information" }
+  },
+  "ConnectionStrings": {
+    "AuditLog": "Data Source=E:\\data\\audit.db"
+  },
+  "MovexDb": {
+    "ConnectionString": "<PRODUCTION MOVEX ODBC connection string>",
+    "ActiveCompanyCodes": [ "100" ],
+    "ArMinYear": 2025
+  },
+  "MyInvoisApi": {
+    "BaseUrl": "https://api.myinvois.hasil.gov.my",
+    "IdentityBaseUrl": "https://api.myinvois.hasil.gov.my",
+    "Environment": "production",
+    "CertificateThumbprint": "<PRODUCTION THUMBPRINT FROM B2>",
+    "CertificatePath": "",
+    "CertificatePassword": "",
+    "ClientId": "<PRODUCTION ClientId — NOT the pre-prod one>",
+    "ClientSecret": "<PRODUCTION ClientSecret>"
+  },
+  "ApiKeys": {
+    "Primary": "<regenerate with New-Guid — do not reuse the UAT key>",
+    "Admin":   "<regenerate with New-Guid>"
+  },
+  "BatchScheduler": {
+    "Enabled": false,
+    "DailyRunHour": 2,
+    "DailyRunMinute": 0,
+    "LookbackDays": 1
+  }
+}
+```
+
+**Five things change together — the certificate alone is not enough:**
+
+| Setting | UAT | Production |
+|---|---|---|
+| `BaseUrl` / `IdentityBaseUrl` | `preprod-api.myinvois.hasil.gov.my` | `api.myinvois.hasil.gov.my` |
+| `Environment` | `preprod` | `production` |
+| `CertificateThumbprint` | trial cert | production cert |
+| `ClientId` / `ClientSecret` | pre-prod credentials | **production credentials** |
+| `MovexDb.ActiveCompanyCodes` | `["100"]` if already prod data | `["100"]` (CONO 100 = production) |
+
+> **`BatchScheduler:Enabled` starts `false` deliberately.** Enable it only after the single-invoice
+> verification in B7 passes. This prevents the scheduler firing a full batch before the
+> configuration is proven.
+
+> Clear `CertificatePath` and `CertificatePassword`. `LoadCertificate` tries the thumbprint first
+> and falls back to file path — leaving a stale path risks silently loading the *trial* certificate.
+
+Set the environment variable:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "ASPNETCORE_ENVIRONMENT", "Production",
+    [System.EnvironmentVariableTarget]::Machine)
+```
+
+Then recycle the app pool so it is picked up.
+
+---
+
+## B6 — Firewall and Connectivity
+
+```powershell
+# Production LHDN host must be reachable on 443
+Test-NetConnection -ComputerName "api.myinvois.hasil.gov.my" -Port 443
+```
+
+- [ ] Outbound HTTPS to `api.myinvois.hasil.gov.my` allowed (this is a **different host** from pre-prod — firewall rules naming the pre-prod host will not cover it)
+- [ ] Outbound ODBC to AS400 (port 446 or 8471) allowed
+- [ ] The pre-prod host may remain allowed; it is no longer used
+
+---
+
+## B7 — First Production Submission (One Invoice)
+
+**Submit exactly one invoice before enabling the scheduler.** Signature and chain problems surface
+at Step 8, two to five minutes after an HTTP 200 — a full batch would multiply any error across
+every invoice in it.
+
+```powershell
+$apiKey = "<ApiKeys:Primary from appsettings.Production.json>"
+$day    = "<a date with exactly one known invoice, yyyy-MM-dd>"
+
+Invoke-RestMethod `
+    -Uri "http://localhost:5051/api/v1/batch/process-range" `
+    -Method POST `
+    -Headers @{ "X-API-Key" = $apiKey } `
+    -ContentType "application/json" `
+    -Body (@{ fromDate = $day; toDate = $day } | ConvertTo-Json)
+```
+
+Wait **at least 6 minutes** (the service polls Step 8 five minutes after submission), then:
+
+```powershell
+$db = "E:\data\audit.db"
+sqlite3 $db @"
+SELECT InvoiceNumber, Status, MyInvoisStatus, StatusCode, ErrorMessage
+FROM AuditLogs
+WHERE Action = 'MyInvois_Submit'
+ORDER BY Timestamp DESC LIMIT 5;
+"@
+```
+
+**Pass criteria — both must hold:**
+
+- [ ] `Status` = `Success`
+- [ ] `MyInvoisStatus` = **`Valid`** ← this is the real signal
+
+| Observed | Meaning | Action |
+|---|---|---|
+| `MyInvoisStatus = 'Valid'` | Signature, chain and content all accepted | Proceed to B8 |
+| `MyInvoisStatus = 'Invalid'`, code `DS320`/`DS322` | Signature or digest problem | Re-run B3; check the production cert chains fully. Do **not** enable the scheduler |
+| `MyInvoisStatus = 'Submitted'` after 6+ min | Step 8 poll did not complete | Check logs for polling errors; verify UUID in the LHDN production portal manually |
+| `Status = 'Failed'` at submission | Rejected at Step 4 | Read `StatusCode`/`ErrorMessage` — usually credentials or endpoint, not the certificate |
+
+Cross-check the same invoice in the **production** LHDN portal (not pre-prod).
+
+> **Worth doing while you are here:** if any invoice in this first run contains an ampersand,
+> apostrophe, `+`-prefixed phone number, or an accented character in a party name, note it. The
+> DS322 encoder fix (ADR-018) is only genuinely exercised by such an invoice — a run of plain-ASCII
+> invoices proves nothing about it.
+
+---
+
+## B8 — Enable the Scheduler and Hand Over
+
+Only after B7 shows `MyInvoisStatus = 'Valid'`:
+
+1. Set `"BatchScheduler": { "Enabled": true }` in `appsettings.Production.json`
+2. Recycle the app pool
+3. Confirm the scheduler armed:
+
+```powershell
+Get-Content "C:\inetpub\wwwroot\MyInvois-Api\logs\stdout*.log" |
+    Select-String "DailyBatch" | Select-Object -Last 5
+# Expected: [DailyBatch] Next run in XXX minutes (02:00 local)
+```
+
+4. Verify IIS idle timeout and periodic recycling are both `0` — see [Step 9](#step-9--configure-iis-app-pool-for-persistent-scheduling). **A production server that has never hosted this app will have the 20-minute default, which silently kills the scheduler.**
+
+**Record and diarise:**
+
+- [ ] Production certificate expiry date: `________________`
+- [ ] Renewal reminder set **60 days** before expiry
+- [ ] Production thumbprint recorded in the secure credential store
+- [ ] `.p12` and both `.cer` files backed up (encrypted) — see [Certificate backup](#certificate-backup-encrypted-quarterly)
+- [ ] Finance informed that live submissions have begun
+
+---
+
+## B9 — Production Rollback
+
+If the first production batch goes wrong:
+
+1. **Stop further submissions immediately** — set `BatchScheduler:Enabled = false`, recycle the pool. This is the fastest containment; it does not require a redeploy.
+2. **Documents already submitted cannot be un-submitted.** Invalid ones must be cancelled or corrected through the LHDN portal by Finance, within LHDN's cancellation window.
+3. **Identify the blast radius:**
+
+```powershell
+sqlite3 "E:\data\audit.db" @"
+SELECT InvoiceNumber, MyInvoisUUID, MyInvoisStatus, ErrorMessage
+FROM AuditLogs
+WHERE Timestamp > datetime('now', '-6 hours')
+  AND (Status = 'Failed' OR MyInvoisStatus = 'Invalid');
+"@
+```
+
+4. Invoices whose Step 8 returned `Invalid` are set to `Status='Failed'`, so they are **eligible for resubmission** once corrected — duplicate detection only blocks `Status='Success'`.
+5. Reverting to the pre-prod endpoint is a config change only (B5 values), no redeploy needed.
+
+---
+
+## Go-Live Checklist (Consolidated)
+
+**Preparation**
+- [ ] Production `.p12` + both `.cer` files received and identified (B0)
+- [ ] Files secured on server with restricted ACL (B1)
+- [ ] Root → Intermediate → Leaf imported in order (B2)
+- [ ] Chain builds cleanly; `HasPrivateKey = True` (B3)
+- [ ] App pool granted private-key Read access (B4)
+- [ ] Production `ClientId` / `ClientSecret` obtained from LHDN
+- [ ] `appsettings.Production.json` prepared, scheduler **disabled** (B5)
+- [ ] `ASPNETCORE_ENVIRONMENT=Production` set (B5)
+- [ ] Firewall allows `api.myinvois.hasil.gov.my:443` (B6)
+- [ ] `E:\data` exists with app-pool write access
+- [ ] `BatchScheduler:LookbackDays` confirmed with Finance
+
+**Cutover**
+- [ ] Single invoice submitted; `MyInvoisStatus = 'Valid'` confirmed (B7)
+- [ ] Same invoice verified in the production LHDN portal
+- [ ] Scheduler enabled and armed (B8)
+- [ ] IIS idle timeout = 0 and periodic recycling = 0 (B8 / Step 9)
+
+**Post go-live**
+- [ ] Certificate expiry diarised with 60-day reminder
+- [ ] Certificate and audit DB backups configured
+- [ ] First overnight batch reviewed the following morning (Step 10)
+- [ ] Finance sign-off on the first production batch
+
+**Known open items at go-live**
+- [ ] Manual miscellaneous invoices are still submitted — no exclusion filter exists yet. Discriminator unidentified; see `src/Database/Diagnostics/AR_Manual_Miscellaneous_Invoice_Profiling.sql`. **Finance should expect these until a rule is agreed.**
+- [ ] Genuine AR credit notes would not be submitted under the current `ESTRCD='10'` filter (ADR-019). No such document exists in three years of data, but the business process is unconfirmed.
 
 ---
 
@@ -620,5 +1013,12 @@ These items are **not yet completed** — UAT is the current phase.
 ---
 
 **Deployment Owner:** Hector Salazar (Development & Integration Lead)
-**Last Updated:** 2026-06-01
-**Next Review:** After UAT sign-off / production go-live
+**Last Updated:** 2026-08-11
+**Next Review:** After first production batch
+
+### Change history
+
+| Version | Date | Change |
+|---|---|---|
+| 3.0 | 2026-08-11 | Added Part B (production go-live: certificate chain, endpoint/credential switch, single-invoice verification, rollback). Corrected all audit queries — table is `AuditLogs`/`Timestamp`, not `SubmissionAuditLog`/`SubmittedAt`. Added Step 8 (`MyInvoisStatus`) monitoring. Updated cert backup to cover the full chain. |
+| 2.0 | 2026-05-27 | UAT deployment workflow, IIS idle-timeout fix, Windows Store certificate loading |
