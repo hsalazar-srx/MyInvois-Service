@@ -1,9 +1,9 @@
 # MyInvois-Service — Deployment Runbook
 
 **Target Audience:** IT Operations / Development Lead
-**Version:** 3.0
-**Last Updated:** 2026-08-11
-**Status:** UAT signed off — **production go-live approved**
+**Version:** 3.1
+**Last Updated:** 2026-09-09
+**Status:** UAT signed off — **production go-live in progress** (certificate and credentials verified)
 
 > **Going to production?** Work through **[Part B — Production Go-Live](#part-b--production-go-live)**
 > at the foot of this document. It is a self-contained runbook covering the certificate chain
@@ -125,7 +125,7 @@ Place it alongside the published files in `C:\inetpub\wwwroot\MyInvois\`.
     "Environment": "preprod",
     "CertificatePath": "C:\\Certs\\MyInvois\\SRX_GLOBAL_(MALAYSIA)_SDN._BHD..p12",
     "CertificatePassword": "<certificate password — from secure store>",
-    "ClientId": "a777bc19-e8b9-4adb-b793-7c8b64368a5a",
+    "ClientId": "&lt;pre-prod ClientId — from IT Ops&gt;",
     "ClientSecret": "<pre-prod client secret — from IT Ops>"
   },
   "ApiKeys": {
@@ -446,7 +446,7 @@ dotnet user-secrets --project tests/MyInvois.Service.Tests `
     set "MovexDb:ConnectionString" "DSN=MOVEX_AS400;UID=<user>;PWD=<password>;"
 
 dotnet user-secrets --project tests/MyInvois.Service.Tests `
-    set "MyInvoisApi:ClientId" "a777bc19-e8b9-4adb-b793-7c8b64368a5a"
+    set "MyInvoisApi:ClientId" "&lt;pre-prod ClientId — from IT Ops&gt;"
 
 dotnet user-secrets --project tests/MyInvois.Service.Tests `
     set "MyInvoisApi:ClientSecret" "<secret>"
@@ -733,6 +733,80 @@ Import-PfxCertificate -FilePath "C:\Certs\MyInvois\Prod\<production>.p12" `
 
 The `Import-PfxCertificate` output includes the **thumbprint** — record it, you need it in B4.
 
+### If `Import-PfxCertificate` rejects the file — use `certutil`
+
+**This happened with the June 2026 Pos Digicert certificate and will likely recur at renewal.**
+
+`Import-PfxCertificate` failed with:
+
+```
+The PFX file you are trying to import requires either a different password
+or membership in an Active Directory principal to which it is protected.
+```
+
+The password was correct. `certutil` imported the same file with the same password without complaint — the cmdlet is stricter about certain PKCS#12 encryption profiles than the underlying CryptoAPI.
+
+**First, confirm the password is genuinely correct** (this isolates a password problem from a cmdlet limitation):
+
+```powershell
+$pw = Read-Host -AsSecureString "Production .p12 password"
+try {
+    $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+        "C:\Certs\MyInvois\Prod\<production>.p12", $pw, 'EphemeralKeySet')
+    Write-Host "PASSWORD OK" -ForegroundColor Green
+    $c | Format-List Subject, NotAfter, HasPrivateKey, Thumbprint
+}
+catch { Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red }
+```
+
+If that reports `PASSWORD OK`, fall back to `certutil`:
+
+```powershell
+# -enterprise My  targets LocalMachine\My (NOT the current user's store)
+certutil -f -importpfx -enterprise -p "<password>" My "C:\Certs\MyInvois\Prod\<production>.p12"
+# Expected: Certificate "<BRN>" added to store.
+```
+
+> **The password appears in plain text in your shell history.** Clear it immediately afterwards:
+> ```powershell
+> Clear-History
+> Remove-Item (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
+> ```
+> Prefer `Import-PfxCertificate` whenever it works; use `certutil` only as a fallback.
+
+**Confirm it landed in the machine store, not the user store.** Without `-enterprise`, `certutil`
+imports into `CurrentUser\My`, which the IIS app pool cannot read:
+
+```powershell
+Get-ChildItem Cert:\LocalMachine\My |
+    Select-Object Thumbprint, NotAfter, HasPrivateKey,
+                  @{n='DaysLeft';e={($_.NotAfter - (Get-Date)).Days}} |
+    Format-List
+```
+
+> **Use `Format-List`, not `Format-Table -AutoSize`.** The Subject on these certificates is long
+> enough that `-AutoSize` silently drops the `NotAfter` and `HasPrivateKey` columns — which are
+> precisely the two fields you are checking.
+
+### Two certificates now share the same Subject
+
+After importing production, both the trial and production certificates are in `LocalMachine\My`
+with **identical Subject strings** (same CN, same BRN, same TIN). They differ only by thumbprint
+and expiry.
+
+| Certificate | Thumbprint | Expires |
+|---|---|---|
+| Trial (pre-prod) | `A0E772A9F4EC1D26B732515A3430728E82D78FD7` | 2026-09-05 |
+| **Production** | `47A8CE0C681723F6F38D2D8A1BD54E61B97165A7` | **2029-06-12** |
+
+**Always select by thumbprint, never by Subject match.** Any script using
+`Where-Object { $_.Subject -like "*SRX*" }` now matches both and picks arbitrarily. The
+application itself is safe — `MyInvoiceSubmitter.LoadCertificate` looks up strictly by
+thumbprint — but ad-hoc operational scripts are not.
+
+**Do not delete the trial certificate yet.** It is the fallback if you need to return to pre-prod.
+Remove it only after production has run cleanly for several batches.
+
 ---
 
 ## B3 — Verify the Chain Builds (Do Not Skip)
@@ -758,13 +832,67 @@ $chain.ChainStatus    | ForEach-Object { "  STATUS: $($_.Status) - $($_.StatusIn
 **All of the following must hold before continuing:**
 
 - [ ] `HasPrivateKey` = `True` — signing throws `"Certificate does not contain a private key"` otherwise
-- [ ] `Chain builds` = `True`
-- [ ] `ChainStatus` is empty (no `UntrustedRoot`, no `PartialChain`, no `RevocationStatusUnknown`)
 - [ ] Chain lists three elements: leaf → intermediate → root
+- [ ] No `PartialChain` and no `UntrustedRoot` in `ChainStatus`
 - [ ] `NotAfter` is comfortably in the future — record the date in B8
 
 If `PartialChain` or `UntrustedRoot` appears, the intermediate or root landed in the wrong store.
 Re-check B0's identification and re-import.
+
+### `RevocationStatusUnknown` is expected — and is not a failure
+
+On a server without outbound access to the CA's CRL/OCSP endpoints, `Build()` returns **`False`**
+with:
+
+```
+STATUS: RevocationStatusUnknown - The revocation function was unable to check revocation
+```
+
+**This does not block signing.** It means only that Windows could not reach Pos Digicert to ask
+whether the certificate has been revoked — it is a network result, not a trust defect. The
+application never performs revocation checking when signing (`rsa.SignData`), and LHDN validates
+the signature against its own trust list.
+
+The statuses that *do* indicate a real problem are `PartialChain` and `UntrustedRoot`. Neither
+should be present.
+
+**Confirm the trust path independently** by suppressing only the revocation check:
+
+```powershell
+$chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+$chain.ChainPolicy.RevocationMode = 'NoCheck'
+$built = $chain.Build($cert)
+
+Write-Host "Chain builds (revocation ignored): $built"
+$chain.ChainStatus | ForEach-Object { "  STATUS: $($_.Status)" }
+if (-not $chain.ChainStatus) {
+    Write-Host "  (no status entries - trust path is clean)" -ForegroundColor Green
+}
+```
+
+`True` with no status entries means the trust path is sound. **That is the pass condition.**
+
+**Verified result (2026-09-09 production import):**
+
+```
+Chain builds (revocation ignored): True
+  (no status entries - trust path is clean)
+
+  E=AP.Malaysia@srxglobal.com, SERIALNUMBER=<BRN>, CN=SRX GLOBAL (MALAYSIA) SDN. BHD., ...
+  CN=LHDNM Sub CA G3, OU=Terms of use at http://www.posdigicert.com.my, O=LHDNM, C=MY
+  CN=Pos Digicert Class 2 Root CA G3, OU=457608-K, O=Pos Digicert Sdn. Bhd., C=MY
+```
+
+`HasPrivateKey = True`, valid 2026-06-12 → **2029-06-12** (1008 days at import).
+
+> **Optional hardening:** revocation checking is a genuine security control. If the server can be
+> permitted outbound access to Pos Digicert's CRL/OCSP endpoints, allow it — you would then learn
+> if the certificate were ever revoked. Not a go-live blocker. The endpoints are in the cert:
+> ```powershell
+> $cert.Extensions |
+>     Where-Object { $_.Oid.FriendlyName -match 'CRL|Authority Information' } |
+>     ForEach-Object { $_.Format($true) }
+> ```
 
 ---
 
@@ -842,8 +970,95 @@ Create on the production server, alongside the published files. **Never commit t
 > verification in B7 passes. This prevents the scheduler firing a full batch before the
 > configuration is proven.
 
-> Clear `CertificatePath` and `CertificatePassword`. `LoadCertificate` tries the thumbprint first
-> and falls back to file path — leaving a stale path risks silently loading the *trial* certificate.
+> **Clear `CertificatePath` and `CertificatePassword`.** `LoadCertificate` tries the thumbprint
+> first and falls back to file path. With both the trial and production certificates now in
+> `LocalMachine\My`, a stale path would silently sign production submissions with the **trial**
+> key. Blank both fields.
+
+### Production credentials are separate from pre-prod — they are NOT reusable
+
+`ClientId` and `ClientSecret` are issued per environment. The pre-prod pair exists only in
+`preprod-api.myinvois.hasil.gov.my`'s identity store; against the production host it fails with
+`invalid_client` at token acquisition, before any submission is attempted.
+
+Obtain them from the **production** MyInvois portal (`myinvois.hasil.gov.my`, not the pre-prod
+portal — the two look nearly identical):
+
+1. Log in with an account holding the **Director / Admin** role for the TIN (usually Finance)
+2. **View Taxpayer Profile → Representatives / ERP System**
+3. Register the ERP system, or open the existing registration
+4. Generate **Client ID** and **Client Secret**
+
+> The secret is displayed **once**. It cannot be retrieved later — regenerating invalidates the
+> previous one. Capture it straight into the credential store.
+
+**The ERP registration TIN must match the certificate.** The production certificate's subject
+carries `OID.2.5.4.97=<TIN>`. A mismatch produces Step 8 signature failures that present as
+certificate problems but are not.
+
+**Test token acquisition in isolation before B7** — this separates credential, endpoint and
+network problems from certificate and document problems:
+
+```powershell
+$body = @{
+    client_id     = "<PRODUCTION ClientId>"
+    client_secret = "<PRODUCTION ClientSecret>"
+    grant_type    = "client_credentials"
+    scope         = "InvoicingAPI"
+}
+try {
+    $r = Invoke-RestMethod -Method POST `
+        -Uri "https://api.myinvois.hasil.gov.my/connect/token" `
+        -ContentType "application/x-www-form-urlencoded" -Body $body
+    Write-Host "TOKEN OK - expires in $($r.expires_in)s" -ForegroundColor Green
+}
+catch {
+    Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    $_.ErrorDetails.Message
+}
+```
+
+`TOKEN OK - expires in 3600s` confirms credentials, endpoint and connectivity together.
+*(Verified 2026-09-09.)*
+
+### Verify `ActiveCompanyCodes` actually resolves to 100 only
+
+**This is the highest-risk misconfiguration at go-live, and B7 will not reveal it.**
+
+Base `appsettings.json` ships `"ActiveCompanyCodes": [ "100", "300" ]`. The .NET configuration
+binder **merges arrays by index across layers rather than replacing them** — the behaviour is
+documented on `MovexDbSettings.ActiveCompanyCodes` itself. An override of `[ "100" ]` therefore
+risks resolving to `["100", "300"]`:
+
+| Index | Base | Production override | Resolved |
+|---|---|---|---|
+| 0 | `100` | `100` | `100` |
+| 1 | `300` | *(absent)* | **`300` survives** |
+
+CONO 300 is **Development / UAT** data. If it survives the merge, production batches submit
+UAT invoices to the live tax authority.
+
+**Check what the application resolved — not what the file says.** `DirectQueryDataSource` logs the
+company list on every fetch:
+
+```powershell
+Get-Content "C:\inetpub\wwwroot\MyInvois-Api\logs\stdout*.log" |
+    Select-String "Companies:" | Select-Object -Last 5
+```
+
+- `Companies: 100` → correct, proceed
+- `Companies: 100,300` → **stop**; the merge issue is live
+
+If `300` persists, override via environment variables, which bind cleanly:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "MovexDb__ActiveCompanyCodes__0", "100", [System.EnvironmentVariableTarget]::Machine)
+[System.Environment]::SetEnvironmentVariable(
+    "MovexDb__ActiveCompanyCodes__1", "",    [System.EnvironmentVariableTarget]::Machine)
+```
+
+Recycle the app pool and re-check the log before continuing.
 
 Set the environment variable:
 
@@ -972,20 +1187,22 @@ WHERE Timestamp > datetime('now', '-6 hours')
 ## Go-Live Checklist (Consolidated)
 
 **Preparation**
-- [ ] Production `.p12` + both `.cer` files received and identified (B0)
-- [ ] Files secured on server with restricted ACL (B1)
-- [ ] Root → Intermediate → Leaf imported in order (B2)
-- [ ] Chain builds cleanly; `HasPrivateKey = True` (B3)
+- [x] Production `.p12` + both `.cer` files received and identified (B0)
+- [x] Files secured on server with restricted ACL (B1)
+- [x] Certificate chain imported — `certutil` fallback required (B2)
+- [x] Chain builds cleanly; `HasPrivateKey = True`; expires 2029-06-12 (B3)
 - [ ] App pool granted private-key Read access (B4)
-- [ ] Production `ClientId` / `ClientSecret` obtained from LHDN
+- [x] Production `ClientId` / `ClientSecret` obtained and token verified (B5)
 - [ ] `appsettings.Production.json` prepared, scheduler **disabled** (B5)
+- [ ] **`ActiveCompanyCodes` confirmed as `100` only in the resolved log output** (B5)
 - [ ] `ASPNETCORE_ENVIRONMENT=Production` set (B5)
-- [ ] Firewall allows `api.myinvois.hasil.gov.my:443` (B6)
+- [x] Outbound HTTPS to `api.myinvois.hasil.gov.my:443` confirmed (token call succeeded)
 - [ ] `E:\data` exists with app-pool write access
 - [ ] `BatchScheduler:LookbackDays` confirmed with Finance
 
 **Cutover**
 - [ ] Single invoice submitted; `MyInvoisStatus = 'Valid'` confirmed (B7)
+- [ ] That invoice contained `&`, `'`, `+` or a non-ASCII character — otherwise the DS322 encoder fix (ADR-018) remains unexercised in production
 - [ ] Same invoice verified in the production LHDN portal
 - [ ] Scheduler enabled and armed (B8)
 - [ ] IIS idle timeout = 0 and periodic recycling = 0 (B8 / Step 9)
@@ -1020,5 +1237,6 @@ WHERE Timestamp > datetime('now', '-6 hours')
 
 | Version | Date | Change |
 |---|---|---|
+| 3.1 | 2026-09-09 | Recorded the actual production import: `certutil -importpfx` fallback when `Import-PfxCertificate` rejects a valid file; `RevocationStatusUnknown` explained as expected, with the `NoCheck` pass condition; two co-resident certificates sharing one Subject (select by thumbprint only); production credentials are not reusable from pre-prod, with an isolated token test; `ActiveCompanyCodes` array-merge warning. |
 | 3.0 | 2026-08-11 | Added Part B (production go-live: certificate chain, endpoint/credential switch, single-invoice verification, rollback). Corrected all audit queries — table is `AuditLogs`/`Timestamp`, not `SubmissionAuditLog`/`SubmittedAt`. Added Step 8 (`MyInvoisStatus`) monitoring. Updated cert backup to cover the full chain. |
 | 2.0 | 2026-05-27 | UAT deployment workflow, IIS idle-timeout fix, Windows Store certificate loading |
