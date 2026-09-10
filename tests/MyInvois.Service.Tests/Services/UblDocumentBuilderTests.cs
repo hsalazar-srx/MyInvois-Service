@@ -66,6 +66,23 @@ public class UblDocumentBuilderTests
             .GetProperty("_").GetString()!;
     }
 
+    /// <summary>
+    /// Path: Invoice[0].{party}[0].Party[0].PostalAddress[0].CountrySubentityCode[0]._
+    /// This is the exact field LHDN rejected with CV302 on the first production AP batch.
+    /// </summary>
+    private static string ExtractStateCode(object ublGraph, string party)
+    {
+        var json = UblDocumentBuilder.Minify(ublGraph);
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement
+            .GetProperty("Invoice")[0]
+            .GetProperty(party)[0]
+            .GetProperty("Party")[0]
+            .GetProperty("PostalAddress")[0]
+            .GetProperty("CountrySubentityCode")[0]
+            .GetProperty("_").GetString()!;
+    }
+
     private static string ExtractSupplierCountryCode(object ublGraph)
     {
         var json = UblDocumentBuilder.Minify(ublGraph);
@@ -103,18 +120,133 @@ public class UblDocumentBuilderTests
     }
 
     [Fact]
-    public void BuildUnsigned_BuyerUnmappedCountryCode_FallsBackToMYS()
+    public void BuildUnsigned_BuyerUnmappedCountryCode_ThrowsRatherThanMislabellingCountry()
     {
-        // "OTH" was the old fallback — LHDN rejects it with CV302.
-        // Any unmapped code now falls back to "MYS".
+        // ADR-020 — behaviour deliberately INVERTED.
+        //
+        // This test previously asserted that an unmapped code falls back to "MYS". That fallback
+        // was the defect: a Belgian supplier (BE, absent from the old hand-maintained map) was
+        // submitted to LHDN declared as Malaysian and rejected in the first production batch.
+        //
+        // Declaring the wrong country to a tax authority is worse than failing the invoice, so an
+        // unresolvable code now throws. ProcessInvoice catches per-invoice exceptions, so the
+        // invoice is marked Failed with an actionable message and the rest of the batch proceeds.
         var doc = MinimalDoc(buyerCountry: "ZZ");
+
+        var act = () => UblDocumentBuilder.BuildUnsigned(doc);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*ZZ*not in LHDN's accepted country list*");
+    }
+
+    [Fact]
+    public void BuildUnsigned_BuyerBelgium_ResolvesToBEL()
+    {
+        // The production incident: BE must resolve to BEL, never to MYS.
+        var doc = MinimalDoc(buyerCountry: "BE");
         var ubl = UblDocumentBuilder.BuildUnsigned(doc);
-        ExtractBuyerCountryCode(ubl).Should().Be("MYS");
+        ExtractBuyerCountryCode(ubl).Should().Be("BEL");
+    }
+
+    [Fact]
+    public void BuildUnsigned_SupplierBelgium_ResolvesToBEL()
+    {
+        // AP self-billed invoices carry the foreign supplier's country — the actual failure path.
+        var doc = MinimalDoc(supplierCountry: "BE");
+        var ubl = UblDocumentBuilder.BuildUnsigned(doc);
+        ExtractSupplierCountryCode(ubl).Should().Be("BEL");
+    }
+
+    // ── CV302: CountrySubentityCode must be an LHDN State Code (ADR-021) ──────
+
+    [Fact]
+    public void BuildUnsigned_ForeignSupplier_StateCodeIs17NotNA()
+    {
+        // Production rejection on the first AP batch:
+        //   CV302 "ItemCode NA does not exist in CodeType State Codes"
+        //   path: $.Invoice[*].AccountingSupplierParty[*].Party[*].PostalAddress[*].CountrySubentityCode[*]._
+        // LHDN publishes code 17 = "Not Applicable" for non-Malaysian addresses.
+        var doc = MinimalDoc(supplierCountry: "BE");
+        var ubl = UblDocumentBuilder.BuildUnsigned(doc);
+
+        var state = ExtractStateCode(ubl, "AccountingSupplierParty");
+        state.Should().Be("17");
+        state.Should().NotBe("NA", "the literal string NA is what LHDN rejected");
+        LhdnStateCodes.IsValid(state).Should().BeTrue();
+    }
+
+    [Fact]
+    public void BuildUnsigned_ForeignBuyer_StateCodeIs17NotNA()
+    {
+        var doc = MinimalDoc(buyerCountry: "AU");
+        var ubl = UblDocumentBuilder.BuildUnsigned(doc);
+
+        ExtractStateCode(ubl, "AccountingCustomerParty").Should().Be("17");
+    }
+
+    [Theory]
+    [InlineData("1",  "1")]     // Johor, already unpadded
+    [InlineData("01", "1")]     // zero-padded config form is normalised
+    [InlineData("10", "10")]    // Selangor — the value in successful UAT submissions
+    [InlineData("14", "14")]    // WP Kuala Lumpur
+    public void BuildUnsigned_MalaysianParty_UsesNormalisedStateCode(string configured, string expected)
+    {
+        var doc = MinimalDoc(supplierCountry: "MY");
+        doc.SupplierStateCode = configured;
+
+        var ubl = UblDocumentBuilder.BuildUnsigned(doc);
+
+        ExtractStateCode(ubl, "AccountingSupplierParty").Should().Be(expected);
+    }
+
+    [Fact]
+    public void BuildUnsigned_MalaysianPartyBlankState_UsesCode0NotDoubleZero()
+    {
+        // "00" is not a code LHDN publishes; "0" (All States) is.
+        var doc = MinimalDoc(supplierCountry: "MY");
+        doc.SupplierStateCode = null;
+
+        var ubl = UblDocumentBuilder.BuildUnsigned(doc);
+
+        ExtractStateCode(ubl, "AccountingSupplierParty").Should().Be("0");
+    }
+
+    [Fact]
+    public void BuildUnsigned_MalaysianPartyInvalidState_ThrowsRatherThanGuessing()
+    {
+        var doc = MinimalDoc(supplierCountry: "MY");
+        doc.SupplierStateCode = "99";
+
+        var act = () => UblDocumentBuilder.BuildUnsigned(doc);
+
+        act.Should().Throw<InvalidOperationException>()
+           .WithMessage("*99*not in LHDN's State Codes*");
+    }
+
+    [Fact]
+    public void BuildUnsigned_EveryEmittedStateCode_IsAcceptedByLhdn()
+    {
+        // Whole-set invariant: whatever state code ends up in the document must exist in LHDN's
+        // State Codes table, for every country we can resolve.
+        foreach (var country in new[] { "MY", "BE", "AU", "SG", "US", "GB", "DE", "JP" })
+        {
+            var doc = MinimalDoc(supplierCountry: country, buyerCountry: country);
+            var ubl = UblDocumentBuilder.BuildUnsigned(doc);
+
+            foreach (var party in new[] { "AccountingSupplierParty", "AccountingCustomerParty" })
+            {
+                var state = ExtractStateCode(ubl, party);
+                LhdnStateCodes.IsValid(state).Should()
+                    .BeTrue($"{party} state '{state}' for country '{country}' must be an LHDN State Code");
+            }
+        }
     }
 
     [Fact]
     public void BuildUnsigned_BuyerNullCountryCode_FallsBackToMYS()
     {
+        // A blank country is different from an unrecognised one: no country on file means our own
+        // Malaysian entity, which is a safe and intentional default.
         var doc = MinimalDoc(buyerCountry: null);
         var ubl = UblDocumentBuilder.BuildUnsigned(doc);
         ExtractBuyerCountryCode(ubl).Should().Be("MYS");

@@ -223,38 +223,8 @@ public static class UblDocumentBuilder
         };
     }
 
-    // Maps country codes → ISO 3166-1 alpha-3 for the LHDN IdentificationCode field.
-    // Accepts both alpha-2 (ISO standard) and alpha-3 (M3 sometimes stores 3-char codes).
-    // "OTH" is used as the safe fallback for any unmapped code.
-    private static readonly Dictionary<string, string> CountryToAlpha3 = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["MY"] = "MYS", ["MYS"] = "MYS",
-        ["AU"] = "AUS", ["AUS"] = "AUS",
-        ["SG"] = "SGP", ["SGP"] = "SGP",
-        ["US"] = "USA", ["USA"] = "USA",
-        ["GB"] = "GBR", ["GBR"] = "GBR", ["UK"] = "GBR",   // UK is non-standard but used in some M3 installations
-        ["DE"] = "DEU", ["DEU"] = "DEU",
-        ["JP"] = "JPN", ["JPN"] = "JPN",
-        ["CN"] = "CHN", ["CHN"] = "CHN",
-        ["TH"] = "THA", ["THA"] = "THA",
-        ["ID"] = "IDN", ["IDN"] = "IDN",
-        ["VN"] = "VNM", ["VNM"] = "VNM",
-        ["PH"] = "PHL", ["PHL"] = "PHL",
-        ["IN"] = "IND", ["IND"] = "IND",
-        ["KR"] = "KOR", ["KOR"] = "KOR",
-        ["TW"] = "TWN", ["TWN"] = "TWN",
-        ["HK"] = "HKG", ["HKG"] = "HKG",
-        ["NZ"] = "NZL", ["NZL"] = "NZL",
-        ["FR"] = "FRA", ["FRA"] = "FRA",
-        ["NL"] = "NLD", ["NLD"] = "NLD",
-        ["IT"] = "ITA", ["ITA"] = "ITA",
-        ["SE"] = "SWE", ["SWE"] = "SWE",
-        ["FI"] = "FIN", ["FIN"] = "FIN",
-        ["CH"] = "CHE", ["CHE"] = "CHE",
-        ["MX"] = "MEX", ["MEX"] = "MEX",
-        ["BR"] = "BRA", ["BRA"] = "BRA",
-        ["CA"] = "CAN", ["CAN"] = "CAN",
-    };
+    // Country code resolution lives in LhdnCountryCodes (ADR-020) — it validates against LHDN's
+    // own published list rather than a hand-maintained subset.
 
     private static object BuildAddress(string[] lines, string? countryCode, string? stateCode = null)
     {
@@ -262,16 +232,54 @@ public static class UblDocumentBuilder
             ? lines.Select(l => new { Line = V(l) }).ToArray<object>()
             : new object[] { new { Line = V("NA") } };
 
+        // ADR-020: resolve against LHDN's own published country list (embedded CSV), not a
+        // hand-maintained subset. A blank code means the party has no country on file, which for
+        // this installation means our own Malaysian entity.
         var code = string.IsNullOrWhiteSpace(countryCode) ? "MY" : countryCode.Trim().ToUpperInvariant();
-        // "OTH" is rejected by LHDN CV302. Fall back to "MYS" for any unmapped code so the
-        // document is accepted; the log warning flags the code for addition to CountryToAlpha3.
-        var alpha3 = CountryToAlpha3.TryGetValue(code, out var a3) ? a3 : "MYS";
 
-        // CountrySubentityCode: use configured state for Malaysian addresses, "NA" for all foreign parties.
-        var isMalaysia = code == "MY" || code == "MYS";
-        var resolvedState = isMalaysia
-            ? (string.IsNullOrWhiteSpace(stateCode) ? "00" : stateCode.Trim())
-            : "NA";
+        // An unresolvable code throws rather than defaulting. Previously it silently became "MYS",
+        // so a Belgian supplier was submitted to LHDN as Malaysian and rejected. Failing here marks
+        // the single invoice Failed with an actionable message and leaves the rest of the batch
+        // untouched — ProcessInvoice catches per-invoice exceptions.
+        var alpha3 = LhdnCountryCodes.TryResolve(code)
+            ?? throw new InvalidOperationException(
+                $"Country code '{code}' is not in LHDN's accepted country list. " +
+                "Correct the country on the party record in M3, or add an alias to " +
+                "LhdnCountryCodes.InstallationAliases if this is a non-standard code used by M3. " +
+                "The invoice was not submitted — submitting it would have declared the wrong country.");
+
+        // CountrySubentityCode is validated against LHDN's State Codes table — it must be a code
+        // from that list, not free text.
+        //
+        // ADR-021: this previously sent the literal string "NA" for foreign parties, which LHDN
+        // rejected with CV302 ("ItemCode NA does not exist in CodeType State Codes"). LHDN publishes
+        // code 17 = "Not Applicable" for exactly this case. The bug only affected AP self-billed
+        // invoices with a foreign supplier — Malaysian-to-Malaysian sales invoices carry a real
+        // state code and always passed, so UAT never exercised it.
+        //
+        // A blank Malaysian state uses code 0 = "All States" (LHDN publishes "0", not "00").
+        // Configured codes are normalised: appsettings historically used zero-padded values ("01"),
+        // but LHDN publishes unpadded ones ("1" = Johor). An unrecognised code throws rather than
+        // guessing a state — the same principle as the country code above.
+        var isMalaysia = alpha3 == "MYS";
+        string resolvedState;
+
+        if (!isMalaysia)
+        {
+            resolvedState = LhdnStateCodes.NotApplicable;
+        }
+        else if (string.IsNullOrWhiteSpace(stateCode))
+        {
+            resolvedState = LhdnStateCodes.AllStates;
+        }
+        else
+        {
+            resolvedState = LhdnStateCodes.TryNormalise(stateCode)
+                ?? throw new InvalidOperationException(
+                    $"State code '{stateCode.Trim()}' is not in LHDN's State Codes list. " +
+                    "Valid codes are 0-17 (see Resources/lhdn-state-codes.csv). " +
+                    "Correct Companies[].StateCode in configuration. The invoice was not submitted.");
+        }
 
         return new
         {
