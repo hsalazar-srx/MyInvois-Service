@@ -14,10 +14,21 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
+/// <summary>Step 8 outcome for one document, including why it failed.</summary>
+public sealed record Step8Result(string? Status, string? FailureDetail);
+
 public interface IMyInvoiceSubmitter
 {
     Task<SubmissionResult> Submit(MyInvoiceDocument document, CancellationToken cancellationToken = default);
     Task<string?> GetSubmissionStatus(string myInvoisUUID, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Poll Step 8 and return both the status and the specific validation failures.
+    /// LHDN's details response carries per-validator error codes (CV3xx, DS3xx) and the offending
+    /// field; <see cref="GetSubmissionStatus"/> discards them, which left rejections recorded as
+    /// "Invalid" with no indication of what to fix.
+    /// </summary>
+    Task<Step8Result> GetSubmissionDetails(string myInvoisUUID, CancellationToken cancellationToken = default);
 
     // Kept on the interface for callers that need it directly (e.g. performance tests warm-up).
     Task<string> GetAccessToken(CancellationToken cancellationToken = default);
@@ -152,6 +163,9 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         => _tokenService.GetAccessTokenAsync(cancellationToken);
 
     public async Task<string?> GetSubmissionStatus(string myInvoisUUID, CancellationToken cancellationToken = default)
+        => (await GetSubmissionDetails(myInvoisUUID, cancellationToken)).Status;
+
+    public async Task<Step8Result> GetSubmissionDetails(string myInvoisUUID, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(myInvoisUUID))
             throw new ArgumentException("UUID must not be empty.", nameof(myInvoisUUID));
@@ -174,7 +188,7 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         catch (Exception ex)
         {
             _logger.LogError(ex, "HTTP error polling status for UUID {UUID}", myInvoisUUID);
-            return null;
+            return new Step8Result(null, null);
         }
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -183,21 +197,36 @@ public class MyInvoiceSubmitter : IMyInvoiceSubmitter
         {
             _logger.LogWarning("Non-success response polling UUID {UUID}: HTTP {Status} — {Body}",
                 myInvoisUUID, (int)response.StatusCode, content[..Math.Min(content.Length, 300)]);
-            return null;
+            return new Step8Result(null, null);
         }
 
         try
         {
             var details = JsonSerializer.Deserialize<DocumentDetailsResponse>(content);
             var status  = details?.Status;
-            _logger.LogInformation("Document status for UUID {UUID}: {Status}", myInvoisUUID, status ?? "null");
-            return status;
+            var failure = details?.ValidationResults?.SummariseFailures();
+
+            if (!string.IsNullOrWhiteSpace(failure))
+            {
+                // Log at Error so the specific validator and field appear in the log even if the
+                // audit write later fails. This is the detail that was previously unavailable
+                // anywhere outside the LHDN portal.
+                _logger.LogError(
+                    "Document {UUID} failed LHDN Step 8 validation. Status: {Status}. Failures: {Failures}",
+                    myInvoisUUID, status ?? "null", failure);
+            }
+            else
+            {
+                _logger.LogInformation("Document status for UUID {UUID}: {Status}", myInvoisUUID, status ?? "null");
+            }
+
+            return new Step8Result(status, failure);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to parse document details for UUID {UUID}. Body: {Body}",
                 myInvoisUUID, content[..Math.Min(content.Length, 300)]);
-            return null;
+            return new Step8Result(null, null);
         }
     }
 
