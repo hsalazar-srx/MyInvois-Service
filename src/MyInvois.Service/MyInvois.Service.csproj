@@ -27,9 +27,17 @@
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.3" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="Polly" Version="8.6.5" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.*" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.*" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.*">
+    <!-- EF Core versions are PINNED, not floating (8.0.*).
+         Floating versions caused repeated NU1605 restore failures on the deployment server:
+         8.0.* silently resolved to a newer patch than MyInvois.Api's pinned reference, so the
+         restore failed as a package downgrade. It also let dev and server build against different
+         EF Core patches from identical source — dev resolved 8.0.28 while the server resolved
+         8.0.31.
+         Keep these three and MyInvois.Api's Microsoft.EntityFrameworkCore on the SAME version.
+         To upgrade: change all four together, then build and run the full test suite. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.31" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.31" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.31">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>

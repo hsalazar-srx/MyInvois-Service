@@ -21,7 +21,9 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.*" />
+    <!-- Pinned to match MyInvois.Service and MyInvois.Api. A floating 8.0.* here would let the
+         test suite validate against a different EF Core patch than production runs on. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.31" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />

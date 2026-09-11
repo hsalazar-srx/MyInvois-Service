@@ -1,8 +1,8 @@
 # MyInvois-Service — Deployment Runbook
 
 **Target Audience:** IT Operations / Development Lead
-**Version:** 3.1
-**Last Updated:** 2026-09-09
+**Version:** 3.2
+**Last Updated:** 2026-09-11
 **Status:** UAT signed off — **production go-live in progress** (certificate and credentials verified)
 
 > **Going to production?** Work through **[Part B — Production Go-Live](#part-b--production-go-live)**
@@ -90,10 +90,54 @@ cd "c:\Projects\MyInvois-Service"
 
 # 1a. Confirm all tests pass before pushing
 dotnet test --configuration Release --filter "Category!=Sandbox&Category!=RequiresDb2"
-# Expected: Passed! Failed: 0, Passed: 336
+# Expected: Passed! Failed: 0, Passed: 479
 
 # 1b. Push to GitHub
 git push origin develop
+```
+
+### NU1605 on publish — "Detected package downgrade: Microsoft.EntityFrameworkCore"
+
+```
+error NU1605: Warning As Error: Detected package downgrade:
+  Microsoft.EntityFrameworkCore from 8.0.31 to 8.0.29.
+  MyInvois.Api -> MyInvois.Service -> ...Sqlite 8.0.31 -> ...EntityFrameworkCore (>= 8.0.31)
+  MyInvois.Api -> Microsoft.EntityFrameworkCore (>= 8.0.29)
+```
+
+**Fixed at source as of 2026-09-11 — should no longer occur.** Recorded because it broke two
+deployments and the cause is not where the error points.
+
+**What used to happen.** `MyInvois.Service` and the test project referenced EF Core as `8.0.*`
+(floating), while `MyInvois.Api` pinned an exact version. Each time Microsoft published a new
+8.0.x patch, the floating reference silently moved up, the pinned one fell behind, and restore
+failed as a downgrade. NuGet reports the error against `MyInvois.Api` — the project holding the
+*lower* reference — even though nothing in that file changed.
+
+It also meant dev and server could build from identical source against different EF Core patches
+(dev resolved 8.0.28 while the server resolved 8.0.31).
+
+**All four references are now pinned to the same exact version:**
+
+| Project | Package |
+|---|---|
+| `MyInvois.Service` | `Microsoft.Data.Sqlite`, `...EntityFrameworkCore.Sqlite`, `...EntityFrameworkCore.Design` |
+| `MyInvois.Api` | `Microsoft.EntityFrameworkCore` |
+| `MyInvois.Service.Tests` | `Microsoft.EntityFrameworkCore.Sqlite` |
+
+**To upgrade EF Core:** change all four together, restore, build, and run the full suite. Never
+reintroduce `8.0.*` — the convenience is not worth a restore failure mid-deployment.
+
+**If it recurs**, verify every project resolves the same version rather than bumping one:
+
+```powershell
+Get-ChildItem -Recurse -Filter project.assets.json |
+  Where-Object { $_.FullName -notmatch '\\bin\\' } |
+  ForEach-Object {
+      $v = Select-String -Path $_.FullName -Pattern '"Microsoft\.EntityFrameworkCore/[0-9.]+"' |
+           ForEach-Object { $_.Matches.Value } | Sort-Object -Unique
+      "{0,-28} {1}" -f $_.Directory.Parent.Name, ($v -join ', ')
+  }
 ```
 
 ---
@@ -1237,6 +1281,7 @@ WHERE Timestamp > datetime('now', '-6 hours')
 
 | Version | Date | Change |
 |---|---|---|
+| 3.2 | 2026-09-11 | Documented the recurring NU1605 EF Core downgrade failure and its fix at source — all four package references pinned to one exact version, replacing the floating `8.0.*` that caused it. Test count updated to 479. |
 | 3.1 | 2026-09-09 | Recorded the actual production import: `certutil -importpfx` fallback when `Import-PfxCertificate` rejects a valid file; `RevocationStatusUnknown` explained as expected, with the `NoCheck` pass condition; two co-resident certificates sharing one Subject (select by thumbprint only); production credentials are not reusable from pre-prod, with an isolated token test; `ActiveCompanyCodes` array-merge warning. |
 | 3.0 | 2026-08-11 | Added Part B (production go-live: certificate chain, endpoint/credential switch, single-invoice verification, rollback). Corrected all audit queries — table is `AuditLogs`/`Timestamp`, not `SubmissionAuditLog`/`SubmittedAt`. Added Step 8 (`MyInvoisStatus`) monitoring. Updated cert backup to cover the full chain. |
 | 2.0 | 2026-05-27 | UAT deployment workflow, IIS idle-timeout fix, Windows Store certificate loading |
