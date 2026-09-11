@@ -36,8 +36,10 @@ Use this file for **evidence** of decisions (approvals, meeting notes, impacts),
 
 | ADR-013 | Replace MOVEX REST API with DB2 Direct Access | `ai/memory/09-implementation-decisions.md` | User-initiated architectural change; skills audit updated |
 | ADR-014 | SQLite Audit Storage via EF Core | `ai/memory/09-implementation-decisions.md` | Architecture Review approved March 7, 2026; see `ai/evidence/decision-001-sqlite-audit-storage.md` |
-| ADR-018 | JSON String Escaping Must Match LHDN's Serializer (DS322 second root cause) | `ai/memory/09-implementation-decisions.md` | Amends ADR-017; verified by encoder comparison before change; Help Desk enquiry 2026-07-21 unresolved at time of decision |
+| ADR-018 | JSON String Escaping Must Match LHDN's Serializer (DS322 second root cause) | `ai/memory/09-implementation-decisions.md` | Amends ADR-017. **Outcome 2026-08-11: Finance confirms almost all Step 08 issues resolved after UAT deploy.** Portal-read, not audit-DB verified; LHDN never confirmed the diagnosis (Help Desk enquiry 2026-07-21 unanswered) |
 | ADR-019 | AR ESTRCD=20 Is a Settlement Posting, Not a Credit Note | `ai/memory/09-implementation-decisions.md` | Data-evidence based; profiling script `src/Database/Diagnostics/AR_CreditNote_vs_Payment_Profiling.sql`; Finance confirmation outstanding |
+| ADR-020 | Country Codes Validated Against LHDN's Published List | `ai/memory/09-implementation-decisions.md` | Triggered by Belgian supplier rejection in first production batch (2026-09-10). Authority is LHDN's own CSV, embedded — verified to diverge from .NET RegionInfo in both directions (XKK / 6 territories) |
+| ADR-021 | CountrySubentityCode Must Be an LHDN State Code (CV302) | `ai/memory/09-implementation-decisions.md` | Root cause confirmed from LHDN's own validationResults, not inferred — long-standing "CV303 unknown" was actually CV302 on the state code field. Also fixes the service discarding LHDN's validation detail |
 
 ---
 

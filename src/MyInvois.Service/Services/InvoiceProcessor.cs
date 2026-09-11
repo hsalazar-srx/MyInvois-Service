@@ -292,7 +292,8 @@ public class InvoiceProcessor : IInvoiceProcessor
 
             try
             {
-                var lhdnStatus = await _submitter.GetSubmissionStatus(submission.MyInvoisUUID!, cancellationToken);
+                var step8 = await _submitter.GetSubmissionDetails(submission.MyInvoisUUID!, cancellationToken);
+                var lhdnStatus = step8.Status;
 
                 if (string.IsNullOrWhiteSpace(lhdnStatus))
                 {
@@ -303,8 +304,14 @@ public class InvoiceProcessor : IInvoiceProcessor
                     continue;
                 }
 
+                // Record LHDN's own validator output (error code + offending field) rather than a
+                // generic "check the portal" message. The fallback text is used only when LHDN
+                // returns Invalid without a validationResults block.
                 string? errorDetail = lhdnStatus == "Invalid"
-                    ? "LHDN Step 8 async validation rejected this document. Check the LHDN portal for the specific error code (e.g. CV303) and fix the invoice before resubmitting."
+                    ? step8.FailureDetail
+                      ?? "LHDN Step 8 async validation rejected this document, but returned no " +
+                         "validation detail. Retrieve it with scripts/Get-LhdnDocumentDetails.ps1 " +
+                         $"-Uuid {submission.MyInvoisUUID}"
                     : null;
 
                 await _auditLogger.UpdateStep8Status(

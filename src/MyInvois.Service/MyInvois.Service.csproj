@@ -8,6 +8,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- LHDN's official ISO 3166-1 alpha-3 country code list, extracted from the MyInvois
+         batch submission template (2025.11.30). Embedded so the accepted-value list travels
+         with the assembly and cannot drift from a file on disk. See ADR-020. -->
+    <EmbeddedResource Include="Resources\lhdn-country-codes.csv" />
+    <!-- LHDN's State Codes table (0-17), same source. CountrySubentityCode is validated against
+         this list; sending anything else fails with CV302. See ADR-021. -->
+    <EmbeddedResource Include="Resources\lhdn-state-codes.csv" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.35" />
     <PackageReference Include="System.Data.Odbc" Version="9.0.2" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.1" />

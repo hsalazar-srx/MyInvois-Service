@@ -88,6 +88,78 @@ internal sealed class DocumentDetailsResponse
     [JsonPropertyName("total")]             public decimal? Total             { get; set; }
     [JsonPropertyName("status")]            public string?  Status            { get; set; }
     [JsonPropertyName("createdByUserId")]   public string?  CreatedByUserId   { get; set; }
+
+    /// <summary>
+    /// Per-validator outcomes. Present when Step 08 has run; carries the specific error codes
+    /// (CV3xx, DS3xx) and the offending field. Previously not modelled, so a rejection recorded
+    /// only "Invalid" with no indication of what to fix.
+    /// </summary>
+    [JsonPropertyName("validationResults")]  public ValidationResults? ValidationResults { get; set; }
+}
+
+/// <summary>Step 08 validation outcome for a document.</summary>
+internal sealed class ValidationResults
+{
+    [JsonPropertyName("status")]          public string? Status { get; set; }
+    [JsonPropertyName("validationSteps")] public List<ValidationStep>? ValidationSteps { get; set; }
+
+    /// <summary>
+    /// One-line summary of the failed validators, suitable for an audit ErrorMessage.
+    /// Returns null when nothing failed.
+    /// </summary>
+    public string? SummariseFailures()
+    {
+        var failed = ValidationSteps?
+            .Where(s => !string.Equals(s.Status, "Valid", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (failed is not { Count: > 0 }) return null;
+
+        var parts = failed.Select(step =>
+        {
+            var code    = step.Error?.Code;
+            var message = step.Error?.Message;
+            var target  = step.Error?.Target ?? step.Error?.PropertyPath ?? step.Error?.PropertyName;
+
+            var detail = string.Join("; ",
+                step.Error?.Details?
+                    .Select(d => $"{d.Code}: {d.Message}{(string.IsNullOrWhiteSpace(d.Target) ? "" : $" [{d.Target}]")}")
+                ?? Enumerable.Empty<string>());
+
+            var text = $"{step.Name}";
+            if (!string.IsNullOrWhiteSpace(code))    text += $" ({code})";
+            if (!string.IsNullOrWhiteSpace(message)) text += $": {message}";
+            if (!string.IsNullOrWhiteSpace(target))  text += $" [field: {target}]";
+            if (!string.IsNullOrWhiteSpace(detail))  text += $" — {detail}";
+            return text;
+        });
+
+        return string.Join(" | ", parts);
+    }
+}
+
+internal sealed class ValidationStep
+{
+    [JsonPropertyName("name")]   public string? Name   { get; set; }
+    [JsonPropertyName("status")] public string? Status { get; set; }
+    [JsonPropertyName("error")]  public ValidationStepError? Error { get; set; }
+}
+
+internal sealed class ValidationStepError
+{
+    [JsonPropertyName("code")]         public string? Code         { get; set; }
+    [JsonPropertyName("message")]      public string? Message      { get; set; }
+    [JsonPropertyName("target")]       public string? Target       { get; set; }
+    [JsonPropertyName("propertyName")] public string? PropertyName { get; set; }
+    [JsonPropertyName("propertyPath")] public string? PropertyPath { get; set; }
+    [JsonPropertyName("details")]      public List<ValidationErrorDetail>? Details { get; set; }
+}
+
+internal sealed class ValidationErrorDetail
+{
+    [JsonPropertyName("code")]    public string? Code    { get; set; }
+    [JsonPropertyName("message")] public string? Message { get; set; }
+    [JsonPropertyName("target")]  public string? Target  { get; set; }
 }
 
 internal sealed class ErrorResponse

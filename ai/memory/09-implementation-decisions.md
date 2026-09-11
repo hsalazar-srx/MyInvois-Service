@@ -760,6 +760,52 @@ apply here.
 - ⚠️ LHDN has not confirmed this diagnosis; it is our own finding. The Help Desk thread should be kept
   open until Step 08 results over a full batch confirm the fix in practice
 
+### Outcome (2026-08-11)
+
+Deployed to UAT 2026-08-10. Finance reported after the following batch that **almost all previous
+Step 08 issues are gone** — the intermittent DS320/DS322 rejections that had persisted since the
+XAdES implementation appear resolved.
+
+Three independent root causes produced the same two error codes, which is why each earlier fix
+appeared to work and then regressed:
+
+| # | Root cause | Fix | Record |
+|---|---|---|---|
+| 1 | Digest computed over wrong scope | Correct docDigest / propsDigest scope | ADR-017 |
+| 2 | Trailing decimal zeros not stripped | `DecimalNormalizer` on `MinifyOptions` | Sprint 8 |
+| 3 | JSON string escaping mismatch | `UnsafeRelaxedJsonEscaping` encoder | ADR-018 |
+
+**Verification caveat.** The result is Finance's read of the LHDN portal, not confirmed audit-DB
+data — the audit SQLite DB is on SRXWEBAPP1 and was not queried. Confirm via:
+
+```sql
+SELECT InvoiceNumber, MyInvoisUUID, MyInvoisStatus, Status, ErrorMessage
+FROM AuditLogs WHERE Action = 'MyInvois_Submit' ORDER BY Timestamp DESC;
+```
+
+`MyInvoisStatus` should now be populated where it was previously always NULL.
+
+A clean batch does not by itself validate ADR-018: if the batch contained only plain-ASCII
+invoices it exercised nothing. Confirm at least one submitted invoice carried `&`, `'`, `+` or a
+non-ASCII character before treating the encoder fix as proven.
+
+The fix shipped alongside ADR-019 and the Step 8 polling work, so attribution between the three is
+not isolated.
+
+**LHDN never confirmed the diagnosis.** The Help Desk enquiry of 2026-07-21 restated "signature
+value 1/3 calculated wrongly" and noted that "even adding extra spacing ... will trigger this
+error" — consistent with a canonicalisation mismatch but identifying nothing specific. Requests for
+their canonical string and their library's normalisation list went unanswered.
+
+### Follow-on issue (open)
+
+Finance also reported that some **invalid manual entries related to miscellaneous invoices** were
+submitted and should not have been. This is an eligibility/scope filter gap, not a signature or
+data-quality defect — the documents were constructed and signed correctly but should never have
+entered the pipeline. No manual/miscellaneous filter exists in the codebase as of 2026-08-11. The
+discriminator is unknown and should be established by data profiling before any code change, per
+the approach that produced ADR-019.
+
 ---
 
 ## ADR-019: AR ESTRCD=20 Is a Settlement Posting, Not a Credit Note
@@ -839,6 +885,221 @@ never fetched and never submitted.
   incorrect documents to a tax authority
 - ℹ️ `DeduplicateArRecords` becomes a no-op for `DirectQueryDataSource`; retained as defence-in-depth
   for `StoredProcedureDataSource` with its regression tests intact
+
+---
+
+---
+
+## ADR-020: Country Codes Validated Against LHDN's Published List
+
+**Date:** 2026-09-10
+**Status:** Accepted
+**Evidence:** `src/MyInvois.Service/Resources/lhdn-country-codes.csv` (LHDN MyInvois batch submission template, 2025.11.30)
+
+### Context
+
+The first production batch submitted 33 invoices: 31 valid, 2 invalid. One of the two failed at
+Step 4 because the supplier was Belgian — a country that never appeared during UAT.
+
+`UblDocumentBuilder` held a hand-maintained dictionary of ~26 country codes. `BE` was not in it,
+and the fallback resolved **any** unmapped code to `"MYS"`:
+
+```csharp
+var alpha3 = CountryToAlpha3.TryGetValue(code, out var a3) ? a3 : "MYS";
+```
+
+So a Belgian supplier was declared Malaysian. For an AP self-billed invoice this is not cosmetic —
+a Malaysian supplier is expected to hold a valid Malaysian TIN, so LHDN rejected it.
+
+The in-code comment claimed "the log warning flags the code for addition" — **no such warning
+existed**. `UblDocumentBuilder` is static with no logger, so unmapped codes failed silently. The
+defect was only discoverable through an LHDN rejection.
+
+### The verification question
+
+The first proposed fix was to derive the map from .NET's `RegionInfo`, covering all ~244 ISO
+regions. That was challenged before implementation: *how do we know those are the codes LHDN
+accepts?*
+
+Checking rather than assuming found a real divergence. LHDN publishes **249** codes; .NET yields
+**244**, and neither set contains the other:
+
+| | Count | Detail |
+|---|---|---|
+| .NET codes LHDN does **not** accept | 1 | `XKK` (Kosovo) |
+| LHDN codes .NET cannot produce | 6 | `ATA`, `ATF`, `BVT`, `ESH`, `HMD`, `SGS` |
+
+Had the `RegionInfo`-only approach shipped, a Kosovan supplier would have produced `XKK` — trading
+a silent-wrong-country bug for a silent-rejected-code bug.
+
+### Decision
+
+**LHDN's published list is the authority.** Its CSV is embedded in the assembly as
+`Resources/lhdn-country-codes.csv` and loaded by `LhdnCountryCodes`.
+
+`RegionInfo` is retained **only** to translate alpha-2 input (M3 stores 2-char codes) to alpha-3,
+and every translated value is validated against the LHDN list before use. A code .NET knows but
+LHDN does not is treated as unmapped.
+
+**Unresolvable codes throw instead of defaulting.** `ProcessInvoice` catches per-invoice
+exceptions, so the affected invoice is marked `Failed` with an actionable message and the rest of
+the batch proceeds. Declaring the wrong country to a tax authority is worse than failing one
+invoice.
+
+A blank country still defaults to `MYS` — that means "no country on file", which for this
+installation is our own Malaysian entity. That is distinct from an unrecognised code.
+
+### UK / GB / GBR — no conflict with the existing alias
+
+LHDN publishes **only `GBR`**; neither `UK` nor `GB` appears as a code in its list. All three input
+forms converge on `GBR` through different keys in a single lookup, so they cannot clash:
+
+| Input | Resolves to | Route |
+|---|---|---|
+| `UK` | `GBR` | installation alias (M3 non-standard) |
+| `GB` | `GBR` | RegionInfo alpha-2 → alpha-3, validated against LHDN |
+| `GBR` | `GBR` | direct hit in LHDN's list |
+
+`IsAccepted("UK")` and `IsAccepted("GB")` both return `false` — they are valid *input*, never
+emittable *output*. Aliases are applied last in `BuildLookup`, so `UK → GBR` cannot be overwritten
+by the RegionInfo pass.
+
+**Verified against the built assembly: all 53 mappings from the replaced dictionary produce
+byte-identical results.** The change is purely additive — pinned by
+`TryResolve_LegacyHandMaintainedMappings_AreUnchanged`.
+
+### Consequences
+
+- ✅ All 249 LHDN-accepted countries resolve, including the six absent from .NET's data
+- ✅ No code outside LHDN's list can be emitted — pinned by a whole-set invariant over all 676 two-letter inputs
+- ✅ Silent country mislabelling is structurally impossible; failures are explicit and actionable
+- ✅ Zero regression against the previous dictionary, including the `UK → GBR` alias
+- ⚠️ An invoice with an unrecognised country code now **fails** instead of submitting wrongly. Intended, but a behaviour change: expect occasional failures where bad M3 country data previously passed unnoticed. The fix is to correct the party record in M3.
+- ⚠️ The embedded CSV is a point-in-time copy (2025.11.30). If LHDN publishes a revised list, replace the file and update the expected count in `LhdnCountryCodesTests`.
+- ℹ️ Requires ICU (`InvariantGlobalization` must remain `false`) for alpha-2 translation. Alpha-3 input resolves regardless.
+
+### Files Changed
+
+- `src/MyInvois.Service/Resources/lhdn-country-codes.csv` — new, embedded
+- `src/MyInvois.Service/Services/LhdnCountryCodes.cs` — new resolver
+- `src/MyInvois.Service/Services/UblDocumentBuilder.cs` — dictionary removed; `BuildAddress` throws on unresolvable
+- `src/MyInvois.Service/MyInvois.Service.csproj` — `EmbeddedResource` entry
+- `tests/.../Services/LhdnCountryCodesTests.cs` — new, 66 tests
+- `tests/.../Services/UblDocumentBuilderTests.cs` — `..._FallsBackToMYS` **inverted** (it pinned the defect), Belgium cases added
+
+---
+
+---
+
+## ADR-021: CountrySubentityCode Must Be an LHDN State Code (CV302)
+
+**Date:** 2026-09-10
+**Status:** Accepted
+**Evidence:** `src/MyInvois.Service/Resources/lhdn-state-codes.csv` (LHDN MyInvois batch submission template, 2025.11.30); LHDN document details response for the rejected AP invoice
+**Related:** ADR-020 (same class of defect — placeholder text where LHDN expects a published code)
+
+### Context
+
+The first production batch submitted 33 invoices: 31 valid, 2 invalid. ADR-020 covers the first
+failure (Belgian supplier, country code). This ADR covers the second, which had been recurring
+since pre-prod and was previously assumed to be "CV303, cause unknown".
+
+Retrieving LHDN's own validation result for the rejected document gave the exact answer:
+
+```
+Step04-Code Field Validator: Invalid
+  errorCode: CV302
+  error: "ItemCode NA does not exist in CodeType State Codes"
+  propertyPath: $.Invoice[*].AccountingSupplierParty[*].Party[*]
+                 .PostalAddress[*].CountrySubentityCode[*]._
+```
+
+`BuildAddress` sent the literal string `"NA"` as `CountrySubentityCode` for any non-Malaysian
+party. LHDN validates that field against its published **State Codes** table; `"NA"` is not in it.
+
+Two points worth recording:
+
+1. **The error was CV302, not CV303**, and it is a *code field* validator — nothing to do with
+   party identification, which was the standing hypothesis. The hypothesis was never tested against
+   LHDN's actual response until now.
+2. `Step08-Document Signature Validator` returned **Valid**. Signing was never implicated.
+
+**Why UAT never caught it.** Malaysian-to-Malaysian sales invoices carry a real state code and
+always passed. Only an AP self-billed invoice with a foreign supplier reaches the `"NA"` branch,
+and no foreign supplier appeared in UAT.
+
+The comment directly above the defect read *`"OTH" is rejected by LHDN CV302`* — the same validator
+had already rejected one placeholder value, and `"NA"` was the identical mistake on the next line.
+
+### Decision
+
+**Resolve `CountrySubentityCode` from LHDN's published State Codes table**, embedded as
+`Resources/lhdn-state-codes.csv` and loaded by `LhdnStateCodes`.
+
+| Case | Was | Now | LHDN meaning |
+|---|---|---|---|
+| Foreign party | `"NA"` | `17` | Not Applicable |
+| Malaysian, no state on file | `"00"` | `0` | All States |
+| Malaysian, state configured | as-is | normalised | e.g. `"01"` → `1` (Johor) |
+
+Configured codes are normalised because `appsettings.json` used zero-padded values (`"01"`) while
+LHDN publishes unpadded ones (`1`). Both forms now work; the checked-in default was corrected to
+`"1"`, matching the registered Johor Bahru address.
+
+An unrecognised state code **throws** rather than defaulting, consistent with ADR-020 — declaring
+the wrong state to a tax authority is worse than failing one invoice.
+
+### Companion fix: the service was discarding LHDN's explanation
+
+`GetSubmissionStatus` read only the top-level `status` from the document details response. The
+`validationResults` block — carrying every failed validator, its error code, and the offending
+property path — **was not modelled at all**. That is why rejections were recorded as `Invalid` with
+the message "check the LHDN portal": the answer was in the HTTP response we already had, and we
+threw it away.
+
+Now:
+
+- `validationResults` fully modelled (`ValidationResults`, `ValidationStep`, `ValidationStepError`)
+- New `GetSubmissionDetails` returns status **and** failure detail; `GetSubmissionStatus` retained
+  as a thin wrapper so existing callers and tests are unaffected
+- Failures logged at `Error` with validator name, code and field
+- Audit `ErrorMessage` records LHDN's own wording
+- `scripts/Get-LhdnDocumentDetails.ps1` added for retrieving the full result for any past UUID
+
+Without this, diagnosing the next code-table rejection would again require opening the portal by
+hand.
+
+### Consequences
+
+- ✅ Foreign-party invoices no longer rejected with CV302
+- ✅ State codes validated against LHDN's own list; a whole-set invariant test asserts every emitted code is accepted
+- ✅ Future Step 8 rejections are self-diagnosing — the audit log names the validator, code and field
+- ✅ Zero-padded configuration continues to work
+- ⚠️ An invoice with an unrecognised state code now **fails** instead of submitting a rejected value. Intended, but a behaviour change.
+- ⚠️ The embedded CSV is a point-in-time copy (2025.11.30). If LHDN revises the table, replace the file and update the expected count in `LhdnStateCodesTests`.
+- ℹ️ The previously-rejected invoice can be resubmitted once redeployed: Step 8 `Invalid` sets `Status='Failed'`, which the duplicate check allows through.
+
+### Lesson
+
+Both production failures were the same shape: **a placeholder string sent where LHDN expects a
+value from a published code table**, unexercised by UAT because the data never occurred. The
+remaining `"NA"` placeholders in `BuildAddress` — `CityName` and `PostalZone` — are free-text
+fields, not code-table fields, so they are not affected. Any *new* field should be checked against
+the batch submission template's code lists before a placeholder is used.
+
+### Files Changed
+
+- `src/MyInvois.Service/Resources/lhdn-state-codes.csv` — new, embedded
+- `src/MyInvois.Service/Services/LhdnStateCodes.cs` — new resolver
+- `src/MyInvois.Service/Services/UblDocumentBuilder.cs` — `BuildAddress` state resolution
+- `src/MyInvois.Service/Models/Lhdn/LhdnSubmissionModels.cs` — `validationResults` modelled
+- `src/MyInvois.Service/Services/MyInvoiceSubmitter.cs` — `GetSubmissionDetails`, `Step8Result`
+- `src/MyInvois.Service/Services/InvoiceProcessor.cs` — records real failure detail
+- `src/MyInvois.Service/MyInvois.Service.csproj` — `EmbeddedResource` entry
+- `appsettings.json` — `StateCode` `"01"` → `"1"` (both companies)
+- `scripts/Get-LhdnDocumentDetails.ps1` — new diagnostic
+- `tests/.../Services/LhdnStateCodesTests.cs` — new
+- `tests/.../Services/UblDocumentBuilderTests.cs`, `MyInvoiceSubmitterTests.cs`, `InvoiceProcessorTests.cs` — extended
 
 ---
 

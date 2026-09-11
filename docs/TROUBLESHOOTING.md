@@ -125,6 +125,132 @@ This confirms the endpoint exists and auth works. The 404s are from a **stale bu
 
 ## 🔐 Certificate Issues
 
+### Import-PfxCertificate: "requires either a different password or membership in an Active Directory principal" (2026-09-09)
+
+**Symptom** — importing a valid `.p12` with the correct password fails:
+
+```
+Import-PfxCertificate : The PFX file you are trying to import requires either a different
+password or membership in an Active Directory principal to which it is protected.
+```
+
+**Cause** — the message is generic and covers several unrelated conditions. Encountered during the
+production go-live with the Pos Digicert certificate: the password was correct, and `certutil`
+imported the identical file without complaint. `Import-PfxCertificate` is stricter about certain
+PKCS#12 encryption profiles than the underlying CryptoAPI.
+
+**Step 1 — establish whether the password is actually wrong.** This separates a credential problem
+from a cmdlet limitation:
+
+```powershell
+$pw = Read-Host -AsSecureString "PFX password"
+try {
+    $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+        "C:\path\to\cert.p12", $pw, 'EphemeralKeySet')
+    Write-Host "PASSWORD OK" -ForegroundColor Green
+    $c | Format-List Subject, NotAfter, HasPrivateKey, Thumbprint
+}
+catch { Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red }
+```
+
+**Step 2 — if the password is OK, import with `certutil`:**
+
+```powershell
+# -enterprise My  targets LocalMachine\My. Without it, certutil imports into
+# CurrentUser\My, which the IIS app pool cannot read.
+certutil -f -importpfx -enterprise -p "<password>" My "C:\path\to\cert.p12"
+```
+
+> The password lands in shell history. Clear it: `Clear-History` and
+> `Remove-Item (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue`
+
+**Step 3 — verify it reached the machine store:**
+
+```powershell
+Get-ChildItem Cert:\LocalMachine\My |
+    Select-Object Thumbprint, NotAfter, HasPrivateKey | Format-List
+```
+
+Use `Format-List`. `Format-Table -AutoSize` silently drops `NotAfter` and `HasPrivateKey` when the
+Subject is long — exactly the fields being checked.
+
+**Other causes of the same message**, if the password test in Step 1 also fails:
+
+- The file is not really PKCS#12 — check the header: `Format-Hex <file> -Count 16` should begin `30 82`; `-----BEGIN` means it is PEM and needs conversion
+- The file was corrupted in transit (email gateways mangle binaries) — compare size and hash against the CA's
+- The PFX is genuinely AD-principal protected — no password will work; the CA must reissue
+- Password contains non-ASCII, or was pasted with trailing whitespace — type it manually
+- Modern AES-256/SHA-256 PKCS#12 on an older Windows build the legacy CryptoAPI rejects
+
+---
+
+### Chain validation returns False with RevocationStatusUnknown (2026-09-09)
+
+**Symptom** — `X509Chain.Build()` returns `False`:
+
+```
+STATUS: RevocationStatusUnknown - The revocation function was unable to check revocation
+```
+
+**This is not a certificate fault and does not block signing.** It means only that the server could
+not reach the CA's CRL/OCSP endpoint. The application never checks revocation when signing
+(`rsa.SignData`), and LHDN validates against its own trust list.
+
+The statuses that indicate a genuine problem are **`PartialChain`** (missing intermediate) and
+**`UntrustedRoot`** (root not in the Trusted Root store).
+
+**Confirm the trust path by suppressing only the revocation check:**
+
+```powershell
+$chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+$chain.ChainPolicy.RevocationMode = 'NoCheck'
+$built = $chain.Build($cert)
+Write-Host "Chain builds (revocation ignored): $built"
+$chain.ChainStatus | ForEach-Object { "  STATUS: $($_.Status)" }
+```
+
+`True` with no status entries = trust path is sound.
+
+If `PartialChain` or `UntrustedRoot` appears instead, an intermediate or root landed in the wrong
+store. Root goes to `LocalMachine\Root`; intermediate to `LocalMachine\CA`. A root CA is
+self-signed (`Subject` equals `Issuer`); an intermediate is not.
+
+---
+
+### Wrong certificate used — two certificates share the same Subject (2026-09-09)
+
+**Symptom** — signing succeeds but LHDN rejects at Step 8, or submissions are signed with the
+trial certificate after a production cutover.
+
+**Cause** — after importing production alongside the trial certificate, `LocalMachine\My` holds two
+entries with **identical Subject strings** (same CN, BRN and TIN). They differ only by thumbprint
+and expiry. Any script selecting with `Where-Object { $_.Subject -like "*SRX*" }` matches both and
+picks arbitrarily.
+
+**The application is safe** — `MyInvoiceSubmitter.LoadCertificate` looks up strictly by thumbprint.
+Ad-hoc operational scripts are the risk.
+
+**Always select by thumbprint:**
+
+```powershell
+$cert = Get-ChildItem "Cert:\LocalMachine\My\<THUMBPRINT>"
+```
+
+**Distinguish them by expiry:**
+
+```powershell
+Get-ChildItem Cert:\LocalMachine\My |
+    Select-Object Thumbprint, NotAfter,
+                  @{n='DaysLeft';e={($_.NotAfter - (Get-Date)).Days}} |
+    Sort-Object NotAfter | Format-List
+```
+
+Also confirm `MyInvoisApi:CertificatePath` and `CertificatePassword` are **blank** in the active
+config. `LoadCertificate` falls back to the file path when thumbprint lookup fails, so a stale path
+can silently load the trial certificate.
+
+---
+
 ### Certificate loading under IIS — definitive approach (2026-06-01)
 
 The UAT deployment revealed a cascade of certificate loading failures. The **correct and permanent solution** is to load the certificate from the **Windows Certificate Store by thumbprint**, not from the `.p12` file. This avoids all password delivery problems.

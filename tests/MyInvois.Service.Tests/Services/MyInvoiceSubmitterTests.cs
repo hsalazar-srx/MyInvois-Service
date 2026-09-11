@@ -776,6 +776,105 @@ public class MyInvoiceSubmitterTests
         });
 
     [Fact]
+    public async Task GetSubmissionDetails_InvalidDocument_ExtractsErrorCodeAndField()
+    {
+        // ADR-021: LHDN's details response carries per-validator failures. The service previously
+        // read only the top-level status, so a CV303 rejection was recorded as "Invalid" with no
+        // indication of what to fix — the detail existed only in the LHDN portal.
+        //
+        // Response shape follows the MyInvois SDK v1.5 documentsubmission details schema.
+        var detailsBody = new
+        {
+            uuid = "TEST-UUID-INVALID",
+            internalId = "TEST-INV-001",
+            typeName = "11",
+            status = "Invalid",
+            validationResults = new
+            {
+                status = "Invalid",
+                validationSteps = new object[]
+                {
+                    new { name = "Step01-Document Structure Validator", status = "Valid" },
+                    new
+                    {
+                        name = "Step04-Supplier Validator",
+                        status = "Invalid",
+                        error = new
+                        {
+                            code = "CV303",
+                            message = "Supplier identification scheme is invalid.",
+                            target = "AccountingSupplierParty.PartyIdentification",
+                            propertyPath = "Invoice.AccountingSupplierParty[0].Party[0].PartyIdentification[1]",
+                            details = new object[]
+                            {
+                                new { code = "CV303", message = "schemeID 'BRN' requires a Malaysian registration number.", target = "schemeID" }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        SetupTokenAndDetailsClient(
+            CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        var result = await _sut.GetSubmissionDetails("TEST-UUID-INVALID");
+
+        result.Status.Should().Be("Invalid");
+        result.FailureDetail.Should().NotBeNullOrWhiteSpace();
+        result.FailureDetail.Should().Contain("CV303");
+        result.FailureDetail.Should().Contain("Step04-Supplier Validator");
+        result.FailureDetail.Should().Contain("AccountingSupplierParty");
+        result.FailureDetail.Should().Contain("schemeID");
+
+        // Passing validators must not be reported as failures.
+        result.FailureDetail.Should().NotContain("Step01");
+    }
+
+    [Fact]
+    public async Task GetSubmissionDetails_ValidDocument_ReturnsNoFailureDetail()
+    {
+        var detailsBody = new
+        {
+            uuid = "VALID-UUID",
+            status = "Valid",
+            validationResults = new
+            {
+                status = "Valid",
+                validationSteps = new object[]
+                {
+                    new { name = "Step01-Document Structure Validator", status = "Valid" },
+                    new { name = "Step04-Supplier Validator", status = "Valid" }
+                }
+            }
+        };
+
+        SetupTokenAndDetailsClient(
+            CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, detailsBody));
+
+        var result = await _sut.GetSubmissionDetails("VALID-UUID");
+
+        result.Status.Should().Be("Valid");
+        result.FailureDetail.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSubmissionDetails_NoValidationResultsBlock_ReturnsStatusWithoutDetail()
+    {
+        // Older documents and some responses omit validationResults entirely — must not throw.
+        SetupTokenAndDetailsClient(
+            CreateTokenClient(),
+            CreateHttpClientWithResponse(HttpStatusCode.OK, new { uuid = "U", status = "Invalid" }));
+
+        var result = await _sut.GetSubmissionDetails("U");
+
+        result.Status.Should().Be("Invalid");
+        result.FailureDetail.Should().BeNull();
+    }
+
+    [Fact]
     public async Task GetSubmissionStatus_ValidUUID_ReturnsStatusFromApi()
     {
         // Arrange

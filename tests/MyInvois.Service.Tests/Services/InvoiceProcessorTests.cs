@@ -44,6 +44,10 @@ public class InvoiceProcessorTests
         _submitterMock
             .Setup(s => s.GetSubmissionStatus(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("Valid");
+
+        _submitterMock
+            .Setup(s => s.GetSubmissionDetails(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Step8Result("Valid", null));
     }
 
     #region Constructor Tests
@@ -423,8 +427,8 @@ public class InvoiceProcessorTests
             .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-valid-001" });
 
         _submitterMock
-            .Setup(s => s.GetSubmissionStatus("uuid-valid-001", It.IsAny<CancellationToken>()))
-            .ReturnsAsync("Valid");
+            .Setup(s => s.GetSubmissionDetails("uuid-valid-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Step8Result("Valid", null));
 
         await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
 
@@ -434,9 +438,11 @@ public class InvoiceProcessorTests
     }
 
     [Fact]
-    public async Task ProcessDateRangeBatch_Step8Invalid_UpdatesAuditWithFailedStatus()
+    public async Task ProcessDateRangeBatch_Step8Invalid_RecordsLhdnValidationDetail()
     {
-        // Step 8 returns "Invalid" — audit record flagged as Failed so user can fix and resubmit
+        // ADR-021: the audit record must carry LHDN's own error code and offending field, not a
+        // generic "check the portal" message. Without this the only way to learn why a document
+        // was rejected was to open the LHDN portal by hand.
         var invoices = CreateTestInvoices(1);
         SetupReaderReturns(invoices);
         SetupMapperTransformsSuccessfully();
@@ -448,15 +454,50 @@ public class InvoiceProcessorTests
             .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-invalid-001" });
 
         _submitterMock
-            .Setup(s => s.GetSubmissionStatus("uuid-invalid-001", It.IsAny<CancellationToken>()))
-            .ReturnsAsync("Invalid");
+            .Setup(s => s.GetSubmissionDetails("uuid-invalid-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Step8Result(
+                "Invalid",
+                "Step04-Supplier Validator (CV303): Supplier identification scheme is invalid [field: AccountingSupplierParty.PartyIdentification]"));
 
         await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
 
         _auditLoggerMock.Verify(a =>
             a.UpdateStep8Status(
                 "INV-001", "uuid-invalid-001", "Invalid",
-                It.Is<string>(msg => msg != null && msg.Contains("LHDN portal")),
+                It.Is<string>(msg => msg != null
+                                     && msg.Contains("CV303")
+                                     && msg.Contains("AccountingSupplierParty")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessDateRangeBatch_Step8InvalidWithoutDetail_FallsBackToDiagnosticInstruction()
+    {
+        // If LHDN returns Invalid with no validationResults block, the message must still tell the
+        // operator how to retrieve the detail rather than leaving them with nothing actionable.
+        var invoices = CreateTestInvoices(1);
+        SetupReaderReturns(invoices);
+        SetupMapperTransformsSuccessfully();
+        SetupMapperValidatesSuccessfully();
+        SetupAuditLoggerNoDuplicates();
+
+        _submitterMock
+            .Setup(s => s.Submit(It.IsAny<MyInvoiceDocument>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-nodetail" });
+
+        _submitterMock
+            .Setup(s => s.GetSubmissionDetails("uuid-nodetail", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Step8Result("Invalid", null));
+
+        await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
+
+        _auditLoggerMock.Verify(a =>
+            a.UpdateStep8Status(
+                "INV-001", "uuid-nodetail", "Invalid",
+                It.Is<string>(msg => msg != null
+                                     && msg.Contains("Get-LhdnDocumentDetails")
+                                     && msg.Contains("uuid-nodetail")),
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -476,8 +517,8 @@ public class InvoiceProcessorTests
             .ReturnsAsync(new SubmissionResult { InvoiceNumber = "INV-001", Status = "Success", MyInvoisUUID = "uuid-pending-001" });
 
         _submitterMock
-            .Setup(s => s.GetSubmissionStatus("uuid-pending-001", It.IsAny<CancellationToken>()))
-            .ReturnsAsync("Submitted");
+            .Setup(s => s.GetSubmissionDetails("uuid-pending-001", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Step8Result("Submitted", null));
 
         await _sut.ProcessDateRangeBatch(DateTime.Today.AddDays(-1), DateTime.Today);
 
@@ -507,7 +548,7 @@ public class InvoiceProcessorTests
 
         // Only INV-002 (Success with UUID) should be polled
         _submitterMock.Verify(s =>
-            s.GetSubmissionStatus(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            s.GetSubmissionDetails(It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _auditLoggerMock.Verify(a =>
             a.UpdateStep8Status("INV-002", "uuid-002", It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
